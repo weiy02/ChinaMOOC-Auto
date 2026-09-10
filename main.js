@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         中国大学MOOC-学生互评自动化
-// @namespace    https://github.com/weiy02/-
-// @version      1.7
+// @name         中国大学MOOC-自动化
+// @namespace    https://github.com/weiy02/ChinaMOOC-Auto
+// @version      1.7.1
 // @description  中国大学MOOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
