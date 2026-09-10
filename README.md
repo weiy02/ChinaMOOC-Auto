@@ -1,6 +1,11 @@
 # 中国大学 MOOC 学生互评自动化脚本
 
-这是一个用于中国大学 MOOC 平台的 Tampermonkey 用户脚本，当前主要用于自动化完成学生互评作业流程。
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Platform](https://img.shields.io/badge/Platform-Tampermonkey-blue)
+
+这是一个用于中国大学 MOOC 平台的 Tampermonkey 用户脚本，主要用于自动化完成学生互评作业流程。
+
+---
 
 ## 功能说明
 
