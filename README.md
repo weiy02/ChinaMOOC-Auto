@@ -1,4 +1,4 @@
-# 中国大学 MOOC 学生互评自动化脚本
+# 中国大学 MOOC 自动化脚本
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Platform](https://img.shields.io/badge/Platform-Tampermonkey-blue)
