@@ -1,16 +1,16 @@
 // ==UserScript==
 // @name         中国大学MOOC-学生互评自动化
-// @namespace    https://github.com/你的用户名/仓库名
+// @namespace    https://github.com/weiy02/-
 // @version      1.7
 // @description  中国大学MOOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复、毛玻璃 UI。
-// @author       你的用户名
+// @author       weiy02
 // @match        *://www.icourse163.org/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=icourse163.org
 // @license      MIT
-// @supportURL   https://github.com/你的用户名/仓库名/issues
-// @homepageURL  https://github.com/你的用户名/仓库名
-// @downloadURL  https://raw.githubusercontent.com/你的用户名/仓库名/main/你的脚本.user.js
-// @updateURL    https://raw.githubusercontent.com/你的用户名/仓库名/main/你的脚本.user.js
+// @supportURL   https://github.com/weiy02/-/issues
+// @homepageURL  https://github.com/weiy02/-
+// @downloadURL  https://raw.githubusercontent.com/weiy02/-/main/main.js
+// @updateURL    https://raw.githubusercontent.com/weiy02/-/main/main.js
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
