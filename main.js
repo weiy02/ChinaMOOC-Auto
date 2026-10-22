@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.7.3
-// @description  中国大学MOOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；互评功能自动避开答题页，并内置答题页结构探针。
+// @version      1.9.11
+// @description  中国大学MOOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI，含页面DOM诊断）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击；测验自动跳过、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=icourse163.org
@@ -30,20 +30,30 @@
         FIX_PAGE_WAIT: 2500,
         FIX_LIST_WAIT: 3000,
 
-        // 答题探针自启动：装好网络探针后必须再发生一次导航才能抓到请求，
-        // 所以探针要在页面加载时就装好，而不是等用户点了按钮才装。
-        QUIZ_PROBE_AUTOSTART: true,
+        // ---- 课堂讨论自动回复 ----
+        // 回复正文的长度上限。别人的答复可能是长篇大论，整段照搬既显眼又容易
+        // 触发字数限制，超过就从句子边界截断。
+        DISCUSS_MAX_LEN: 200,
+        // 比这更短的正文不当作“答复”看待（多半是「已删除」「图片」之类的占位）
+        DISCUSS_MIN_LEN: 2,
+        // 单条讨论最多解析多少个答复，防止楼层上千时卡住
+        DISCUSS_MAX_ITEMS: 300,
+        // 已回复记录最多留多少条（按讨论标题 + 页面地址去重）
+        DISCUSS_HISTORY_MAX: 300,
+        // 填入编辑器后到点「发布」之间的等待，给富文本框架留出同步时间
+        DISCUSS_FILL_WAIT: 600,
 
-        // ---- 答题 ----
-        // 每题之间的随机间隔。固定 300ms 连点二十道题是个很容易被识别的模式。
-        QUIZ_DELAY_MIN: 800,
-        QUIZ_DELAY_MAX: 2500,
-        QUIZ_MAX_ANSWER: 100,
-        // 低于这个置信度的命中不采用，算作未解决（并因此阻断自动提交）
-        QUIZ_CONFIDENCE_MIN: 0.8,
-        // 自动提交默认关，且考试页会硬阻断。改这里只是打开开关，
-        // 真正的闸门在 canAutoSubmit() 里。
-        QUIZ_AUTO_SUBMIT: false,
+        // ---- 自动学习（新版学习页 #/learn/content?type=detail&id=xxx）----
+        LEARN_DOC_PAGE_MS: 1000,        // 文档每页停留 1 秒（用户要求）
+        LEARN_NAV_WAIT: 5000,           // 切换内容后的加载等待上限
+        LEARN_QUIZ_RESUME_WAIT: 8000,   // 提交视频弹题后，等待视频自动恢复播放的最长时间
+        LEARN_QUIZ_VISIT_MS: 2500,      // （测验改为直接跳过，不再停留；此值保留作兜底）
+        LEARN_OTHER_VISIT_MS: 10000,    // 富文本等其它内容停留 10 秒后自动跳转（用户要求）
+        LEARN_VIDEO_END_MARGIN: 1.5,    // 距视频结尾还剩多少秒视为“已看完”
+        LEARN_CONTENT_READY_WAIT: 15000, // 内容加载就绪的最大等待时间（修复“没加载完就跳转”）
+        LEARN_IDLE_POLL: 600,           // 视频监控轮询间隔（毫秒）
+        LEARN_MAX_PAGE_FLIPS: 600,      // 单个文档最多翻多少页（保险上限）
+        LEARN_MAX_ITEMS: 200,           // 单章最多处理多少内容（保险上限）
     };
 
     var LIST_CONFIG = {
@@ -82,7 +92,9 @@
     // 已交卷的答案解析都挂在 #/learn/content 下，URL 分不出来。
     function hasQuestionBlocks() {
         return document.querySelectorAll(
-            '.u-questionItem, .m-choiceQuestion, .m-subjectiveQuestion, .m-fillblankQuestion, .j-questionItem'
+            '.u-questionItem, .m-choiceQuestion, .m-subjectiveQuestion, .m-fillblankQuestion, .j-questionItem, ' +
+            '[class*="questionItem"], [class*="question-item"], [class*="choiceQuestion"], [class*="fillblankQuestion"], ' +
+            '[class*="fillblank"], [class*="judgeQuestion"], [class*="objectiveQuestion"], [class*="testItem"]'
         ).length > 0;
     }
 
@@ -102,6 +114,19 @@
                 if (taskState.cancelled) { reject(makeCancelError()); return; }
                 if (Date.now() - start >= ms) { resolve(); return; }
                 setTimeout(tick, CONFIG.CANCEL_POLL_INTERVAL);
+            }
+            tick();
+        });
+    }
+
+    // 带提前退出的等待：early() 返回 true（如用户点了【下一节】）时立即结束
+    function sleepWhile(ms, early) {
+        return new Promise(function (resolve, reject) {
+            var start = Date.now();
+            function tick() {
+                if (taskState.cancelled) { reject(makeCancelError()); return; }
+                if (Date.now() - start >= ms || (typeof early === 'function' && early())) { resolve(); return; }
+                setTimeout(tick, 250);
             }
             tick();
         });
@@ -145,6 +170,30 @@
         if (setter) setter.call(el, value); else el.value = value;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    // ===================== 本地存储 =====================
+    // 只有 localStorage 一条来源。读写都要吞掉异常：隐私模式下 localStorage
+    // 会直接抛，而存的是开关状态和回复留痕这类非关键数据，不能因为存不下就崩。
+    function readStore(key, fallback) {
+        try {
+            var raw = localStorage.getItem(key);
+            if (!raw) return fallback;
+            return JSON.parse(raw);
+        } catch (e) {
+            console.warn('[MOOC助手] 读取本地存储失败', key, e);
+            return fallback;
+        }
+    }
+
+    function writeStore(key, val) {
+        try {
+            localStorage.setItem(key, JSON.stringify(val));
+            return true;
+        } catch (e) {
+            console.warn('[MOOC助手] 写入本地存储失败', key, e);
+            return false;
+        }
     }
 
     // ===================== 解除复制限制 =====================
@@ -243,1049 +292,6 @@
         updateStatus(next
             ? '🔓 已解除复制限制：可选中、可右键、Ctrl/⌘+C 可用'
             : '🔒 已恢复页面原本的复制限制');
-    }
-
-    // ===================== 题库：归一化 =====================
-    // 用三个归一化器而不是一个：题干的归一化很激进（去光所有空白），
-    // 但填空题答案和英文选项套用同样的规则就会永远匹配不上
-    // （"New York" 变成 "newyork" 就再也对不上了）。
-    var BANK_CONFIG = {
-        FUZZY_THRESHOLD: 0.86,     // Dice 阈值
-        // Dice 对长度差很敏感：短题干改一个字就掉到 0.83，分不开
-        // 「同一道题微调」（重叠系数 ≥0.90）和「另一道相近的题」（≤0.83）。
-        // 单独用重叠系数不安全（短题干是长题干子串时会得 1.0），
-        // 必须和下面的长度比预筛一起用。
-        CONTAINMENT_THRESHOLD: 0.90,
-        AMBIGUITY_MARGIN: 0.03,    // 冠亚军分差小于此值即判为歧义，不采纳
-        LENGTH_PREFILTER: 0.4,     // 长度差超过此比例直接跳过，不浪费算力
-        CANDIDATE_LIMIT: 200,      // 模糊匹配最多精算多少个候选
-        OPTION_FUZZY: 0.82,        // 答案文本 → 页面选项 的模糊映射阈值
-        SEP: '\u0001',             // 指纹分隔符，正文里不可能出现
-    };
-
-    // 全角转半角。（）（）都在 ！-～ 区间内，一并处理
-    function toHalfWidth(s) {
-        return String(s)
-            .replace(/[！-～]/g, function (c) {
-                return String.fromCharCode(c.charCodeAt(0) - 0xFEE0);
-            })
-            .replace(/　/g, ' ');
-    }
-
-    function unifyQuotes(s) {
-        return s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
-    }
-
-    // 题干归一化：全角转半角 → 去题型/分值标记 → 剥题号 → 去光空白 → 小写
-    function normalizeStem(text) {
-        if (!text) return '';
-        var s = unifyQuotes(toHalfWidth(text));
-        // 题型/分值标记不是题干的一部分
-        s = s.replace(/[【\[][^】\]]{0,10}(?:单选|多选|判断|填空|不定项|简答|论述)[^】\]]{0,10}[】\]]/g, '');
-        s = s.replace(/[(]\s*\d+(?:\.\d+)?\s*分\s*[)]/g, '');
-        // 题块里的「得分/总分」标签。两侧都要剥，题库里若也混进了它才能对上
-        s = s.replace(/得分\s*\/\s*总分/g, '');
-        // 题号前缀。必须带分隔符或“第N题”，否则 "2的平方根" 会被削成 "的平方根"
-        s = s.replace(/^\s*第\s*\d+\s*[题小]?\s*[.、)）\]】:：]?\s*/, '');
-        s = s.replace(/^\s*[(]?\s*\d{1,3}\s*[)）.、:：]\s*/, '');
-        s = s.replace(/^\s*\d{1,3}\s+/, '');
-        return s.replace(/\s+/g, '').toLowerCase();
-    }
-
-    // 选项归一化：只剥“带分隔符”的标号，这样 "3个" / "A类" 不会被误伤
-    function normalizeOption(text) {
-        if (text === null || text === undefined) return '';
-        var s = unifyQuotes(toHalfWidth(text)).replace(/\s+/g, ' ').trim();
-        s = s.replace(/^\s*[(]?\s*[A-Za-z]\s*[)）.、:：]\s*/, '');
-        s = s.replace(/^\s*\d{1,2}\s*[)）.、:：]\s*/, '');
-        return s.replace(/\s+/g, ' ').trim().toLowerCase();
-    }
-
-    // 答案归一化：保留单个空格，不去光（英文填空答案要保留词间空格）
-    function normalizeAnswer(text) {
-        if (text === null || text === undefined) return '';
-        return unifyQuotes(toHalfWidth(text)).replace(/\s+/g, ' ').trim().toLowerCase();
-    }
-
-    // ===================== 题库：相似度 =====================
-    function bigrams(s) {
-        var out = [];
-        if (!s) return out;
-        if (s.length === 1) { out.push(s); return out; }
-        for (var i = 0; i < s.length - 1; i++) out.push(s.substr(i, 2));
-        return out;
-    }
-
-    // 二元组多重集合的 Dice 系数：2|A∩B| / (|A|+|B|)
-    function diceFromArrays(a, b) {
-        if (a.length === 0 && b.length === 0) return 1;
-        if (a.length === 0 || b.length === 0) return 0;
-        var counts = new Map(), i;
-        for (i = 0; i < a.length; i++) counts.set(a[i], (counts.get(a[i]) || 0) + 1);
-        var inter = 0;
-        for (i = 0; i < b.length; i++) {
-            var c = counts.get(b[i]);
-            if (c > 0) { inter++; counts.set(b[i], c - 1); }
-        }
-        return (2 * inter) / (a.length + b.length);
-    }
-
-    function diceSimilarity(s1, s2) {
-        return diceFromArrays(bigrams(s1), bigrams(s2));
-    }
-
-    // 重叠系数 |A∩B| / min(|A|,|B|)，配合长度预筛使用
-    function containmentFromArrays(a, b) {
-        if (a.length === 0 || b.length === 0) return 0;
-        var counts = new Map(), i;
-        for (i = 0; i < a.length; i++) counts.set(a[i], (counts.get(a[i]) || 0) + 1);
-        var inter = 0;
-        for (i = 0; i < b.length; i++) {
-            var c = counts.get(b[i]);
-            if (c > 0) { inter++; counts.set(b[i], c - 1); }
-        }
-        return inter / Math.min(a.length, b.length);
-    }
-
-    function containmentSimilarity(s1, s2) {
-        return containmentFromArrays(bigrams(s1), bigrams(s2));
-    }
-
-    // ===================== 题库：索引 =====================
-    function mapPush(map, key, val) {
-        if (!map.has(key)) map.set(key, []);
-        map.get(key).push(val);
-    }
-
-    // 指纹 = 归一化题干 + 选项文本集合（排序后）。
-    // 不存哈希：32 位 FNV 在万条量级碰撞率约 1%，且没有便宜的检测手段，
-    // 而全长键约 300 字节/条，一万条也就 3MB，还能直接在 console 里看。
-    // 归一化后为空的选项（图片选项）要剔除；剩不到 2 个说明选项不可用，
-    // 指纹退化成题干本身，这种情况下只允许精确匹配。
-    function fingerprintKey(rec) {
-        var opts = [], i;
-        for (i = 0; i < (rec.o || []).length; i++) {
-            var t = normalizeOption(rec.o[i]);
-            if (t !== '') opts.push(t);
-        }
-        if (opts.length < 2) return null;
-        return rec._norm + BANK_CONFIG.SEP + opts.slice().sort().join(BANK_CONFIG.SEP);
-    }
-
-    function buildBankIndex(records) {
-        var idx = {
-            byExact: new Map(),
-            byFingerprint: new Map(),
-            all: [],
-            bigramIndex: new Map(),
-            stats: { total: 0, noFingerprint: 0 },
-        };
-        for (var i = 0; i < records.length; i++) {
-            var rec = records[i];
-            if (!rec || !rec.q) continue;
-            rec._norm = normalizeStem(rec.q);
-            rec._fpKey = fingerprintKey(rec);
-            var pos = idx.all.length;
-            idx.all.push(rec);
-            mapPush(idx.byExact, rec._norm, rec);
-            if (rec._fpKey) mapPush(idx.byFingerprint, rec._fpKey, rec);
-            else idx.stats.noFingerprint++;
-            // 题干二元组倒排索引：模糊匹配时只对候选集精算，不用每道题扫全库
-            var grams = bigrams(rec._norm), seen = {};
-            for (var g = 0; g < grams.length; g++) {
-                if (seen[grams[g]]) continue;
-                seen[grams[g]] = 1;
-                if (!idx.bigramIndex.has(grams[g])) idx.bigramIndex.set(grams[g], []);
-                idx.bigramIndex.get(grams[g]).push(pos);
-            }
-        }
-        idx.stats.total = idx.all.length;
-        return idx;
-    }
-
-    // ===================== 题库：匹配 =====================
-    function makeFingerprint(normStem, optionTexts) {
-        var opts = [], i;
-        for (i = 0; i < (optionTexts || []).length; i++) {
-            var t = normalizeOption(optionTexts[i]);
-            if (t !== '') opts.push(t);
-        }
-        if (opts.length < 2) return null;
-        return normStem + BANK_CONFIG.SEP + opts.slice().sort().join(BANK_CONFIG.SEP);
-    }
-
-    function fuzzyMatch(idx, norm) {
-        var grams = bigrams(norm);
-        if (grams.length === 0) return null;
-
-        var cand = new Map();
-        for (var g = 0; g < grams.length; g++) {
-            var list = idx.bigramIndex.get(grams[g]);
-            if (!list) continue;
-            for (var i = 0; i < list.length; i++) cand.set(list[i], (cand.get(list[i]) || 0) + 1);
-        }
-        if (cand.size === 0) return null;
-
-        // 先按共现次数排序取前 N 个，再精算 Dice：最坏情况下的开销可控
-        var arr = [];
-        cand.forEach(function (v, k) { arr.push([k, v]); });
-        arr.sort(function (a, b) { return b[1] - a[1]; });
-        var limit = Math.min(arr.length, BANK_CONFIG.CANDIDATE_LIMIT);
-
-        var scored = [];
-        for (var j = 0; j < limit; j++) {
-            var rec = idx.all[arr[j][0]];
-            var other = rec._norm;
-            var maxLen = Math.max(other.length, norm.length);
-            if (maxLen === 0) continue;
-            if (Math.abs(other.length - norm.length) / maxLen > BANK_CONFIG.LENGTH_PREFILTER) continue;
-            var otherGrams = bigrams(other);
-            var s = diceFromArrays(grams, otherGrams);
-            var c = containmentFromArrays(grams, otherGrams);
-            if (s >= BANK_CONFIG.FUZZY_THRESHOLD) {
-                scored.push({ rec: rec, score: s, contain: c, via: 'dice' });
-            } else if (c >= BANK_CONFIG.CONTAINMENT_THRESHOLD) {
-                // Dice 没过但几乎完全重叠：短题干的单字改动属于这种情况
-                scored.push({ rec: rec, score: s, contain: c, via: 'containment' });
-            }
-        }
-        if (scored.length === 0) return null;
-
-        scored.sort(function (a, b) { return b.score - a.score; });
-        var top = scored[0];
-        var second = scored.length > 1 ? scored[1].score : 0;
-        // 歧义边距：冠亚军太接近说明题库里有近似重复的题干，宁可不答也不能选错
-        if (scored.length > 1 && top.score - second < BANK_CONFIG.AMBIGUITY_MARGIN) {
-            return {
-                rec: null, source: 'ambiguous', confidence: top.score,
-                candidates: scored.slice(0, 3).map(function (x) {
-                    return { q: x.rec.q, score: x.score, contain: x.contain, via: x.via };
-                })
-            };
-        }
-        return {
-            rec: top.rec, source: 'fuzzy', via: top.via,
-            // 走重叠系数通道时 Dice 会偏低，报出来吓人，那种情况用重叠系数作置信度
-            confidence: (top.via === 'containment') ? top.contain : top.score,
-        };
-    }
-
-    function answerKey(rec) {
-        return (rec.a || []).map(normalizeAnswer).slice().sort().join(BANK_CONFIG.SEP);
-    }
-
-    function sameAnswer(recs) {
-        var k = answerKey(recs[0]);
-        for (var i = 1; i < recs.length; i++) {
-            if (answerKey(recs[i]) !== k) return false;
-        }
-        return true;
-    }
-
-    function ambiguous(recs, source, confidence) {
-        return {
-            rec: null, source: source, confidence: confidence || 1,
-            candidates: recs.slice(0, 3).map(function (r) { return { q: r.q, a: r.a, s: r.s, score: 1 }; })
-        };
-    }
-
-    // 三级匹配：指纹（题干+选项集合）→ 精确（纯题干）→ 模糊
-    // 指纹比纯题干更具体，所以优先。命中多条时先看答案是否一致——
-    // 一致就放心用，不一致必须判歧义，绝不能静默取第一条。
-    function matchQuestion(idx, stem, optionTexts) {
-        var norm = normalizeStem(stem);
-        if (!norm) return null;
-
-        var fp = makeFingerprint(norm, optionTexts);
-        var fh = fp ? idx.byFingerprint.get(fp) : null;
-        if (fh && fh.length === 1) return { rec: fh[0], source: 'fingerprint', confidence: 1 };
-
-        var hit = idx.byExact.get(norm);
-        if (hit && hit.length === 1) return { rec: hit[0], source: 'exact', confidence: 1 };
-
-        if (hit && hit.length > 1) {
-            var narrowed = fh ? hit.filter(function (r) { return r._fpKey === fp; }) : [];
-            if (narrowed.length === 1) return { rec: narrowed[0], source: 'exact+fingerprint', confidence: 0.95 };
-            if (sameAnswer(hit)) return { rec: hit[0], source: 'exact', confidence: 0.9 };
-            return ambiguous(hit, 'ambiguous');
-        }
-        if (fh && fh.length > 1) {
-            if (sameAnswer(fh)) return { rec: fh[0], source: 'fingerprint', confidence: 0.95 };
-            return ambiguous(fh, 'ambiguous');
-        }
-        return fuzzyMatch(idx, norm);
-    }
-
-    // ===================== 题库：自检（可脱离平台运行） =====================
-    // 这是整个方案里唯一能脱离 icourse163 单测的部分，所以 fixture 要覆盖
-    // 已知的全部坑：全角括号、题号前缀、分值后缀、选项乱序、图片选项、
-    // 单字题干、英文题干、以及“两条近似题干必须判为歧义”。
-    function quizSelfTest() {
-        var lines = [];
-        function ok(name, cond, detail) {
-            lines.push((cond ? '✅ ' : '❌ ') + name + (detail ? '  → ' + detail : ''));
-            return cond;
-        }
-
-        // --- 归一化 ---
-        ok('题号+空格前缀',
-            normalizeStem('1 前趋图中的边表示的是什么关系？') === normalizeStem('前趋图中的边表示的是什么关系？'),
-            normalizeStem('1 前趋图中的边表示的是什么关系？'));
-        ok('题号+句点前缀',
-            normalizeStem('2.地球是圆的') === normalizeStem('地球是圆的'));
-        ok('“第N题”前缀',
-            normalizeStem('第3题 地球是圆的') === normalizeStem('地球是圆的'));
-        ok('全角括号分值后缀',
-            normalizeStem('地球是圆的（2分）') === normalizeStem('地球是圆的'));
-        ok('题型标记剔除',
-            normalizeStem('【单选题】地球是圆的') === normalizeStem('地球是圆的'));
-        // 站点把「得分/总分」作为独立文本节点放在题块里，不剥掉会让题干对不上
-        ok('“得分/总分”标签剔除',
-            normalizeStem('地球是圆的 得分/总分') === normalizeStem('地球是圆的'));
-        ok('不误伤以数字开头的题干',
-            normalizeStem('2的平方根是多少') === normalizeStem('2的平方根是多少') &&
-            normalizeStem('2的平方根是多少') !== '');
-        ok('选项标号只剥带分隔符的',
-            normalizeOption('A. 箭头节点') === '箭头节点' &&
-            normalizeOption('A类节点') === 'a类节点' &&
-            normalizeOption('3个选项') === '3个选项',
-            normalizeOption('A类节点') + ' | ' + normalizeOption('3个选项'));
-        ok('答案保留词间空格',
-            normalizeAnswer('New York') === 'new york',
-            normalizeAnswer('New York'));
-
-        // --- 相似度 ---
-        ok('完全相同 = 1', diceSimilarity('地球是圆的', '地球是圆的') === 1);
-        ok('完全不同 ≈ 0', diceSimilarity('地球是圆的', 'abcxyz') === 0);
-        // 短题干删一个字：Dice 只有 0.833，必须靠重叠系数（0.909）救回来
-        var dShort = diceSimilarity('前趋图中的边表示的是什么关系', '前趋图中的边表示什么关系');
-        var cShort = containmentSimilarity('前趋图中的边表示的是什么关系', '前趋图中的边表示什么关系');
-        ok('短题干单字改动 Dice 偏低而重叠系数偏高',
-            dShort < 0.86 && cShort >= 0.90,
-            'dice=' + dShort.toFixed(3) + ' contain=' + cShort.toFixed(3));
-        // 同义改写两条通道都不该通过，否则会答成另一道题
-        var dPara = diceSimilarity('进程和线程的主要区别是什么', '进程和线程的主要区别有哪些');
-        var cPara = containmentSimilarity('进程和线程的主要区别是什么', '进程和线程的主要区别有哪些');
-        ok('同义改写两条通道都不通过',
-            dPara < 0.86 && cPara < 0.90,
-            'dice=' + dPara.toFixed(3) + ' contain=' + cPara.toFixed(3));
-
-        // --- 索引与匹配 ---
-        var bank = {
-            schemaVersion: 1,
-            questions: [
-                { q: '前趋图中的边表示的是什么关系？', t: 'single',
-                  o: ['箭头节点和箭尾节点的包含关系', '箭头节点和箭尾节点的隶属关系',
-                      '箭头节点和箭尾节点的并列关系', '箭头节点和箭尾节点的执行次序'],
-                  a: ['箭头节点和箭尾节点的执行次序'], s: 'verified' },
-                { q: '地球是平的', t: 'judge', o: ['正确', '错误'], a: ['错误'], s: 'verified' },
-                { q: '中国的首都是____', t: 'fill', o: [], a: ['北京'], s: 'manual' },
-                // 同题干、不同答案（题库里重复且冲突）——必须判歧义，不能静默取第一条
-                { q: '进程和线程最主要的区别是什么', t: 'single',
-                  o: ['是否拥有独立地址空间', '是否可并发执行'], a: ['是否拥有独立地址空间'], s: 'verified' },
-                { q: '进程和线程最主要的区别是什么', t: 'single',
-                  o: ['是否拥有独立地址空间', '是否可并发执行'], a: ['是否可并发执行'], s: 'llm' },
-            ]
-        };
-        var idx = buildBankIndex(bank.questions);
-        ok('索引条目数', idx.stats.total === 5, String(idx.stats.total));
-        ok('填空题无指纹', idx.stats.noFingerprint === 1, String(idx.stats.noFingerprint));
-
-        // 指纹（题干+选项集合）比纯题干更具体，所以它优先于精确匹配，这是设计意图
-        var r1 = matchQuestion(idx, '1 前趋图中的边表示的是什么关系？',
-            ['箭头节点和箭尾节点的包含关系', '箭头节点和箭尾节点的隶属关系',
-             '箭头节点和箭尾节点的并列关系', '箭头节点和箭尾节点的执行次序']);
-        ok('首选指纹命中且答案正确',
-            r1 && r1.rec && r1.rec.a[0] === '箭头节点和箭尾节点的执行次序',
-            r1 ? (r1.source + ' conf=' + r1.confidence) : 'null');
-
-        // 无选项可用时（如只有题干）应退到精确匹配
-        var rExact = matchQuestion(idx, '前趋图中的边表示的是什么关系？', []);
-        ok('无选项时退到精确匹配',
-            rExact && rExact.source === 'exact' && rExact.rec.a[0] === '箭头节点和箭尾节点的执行次序',
-            rExact ? rExact.source : 'null');
-
-        // 短题干单字改动 → 必须靠重叠系数通道命中，且要能取到答案
-        var rShort = matchQuestion(idx, '1、前趋图中的边表示什么关系？',
-            ['箭头节点和箭尾节点的包含关系', '箭头节点和箭尾节点的隶属关系',
-             '箭头节点和箭尾节点的并列关系', '箭头节点和箭尾节点的执行次序']);
-        ok('短题干单字改动仍能命中',
-            rShort && rShort.rec && rShort.rec.a[0] === '箭头节点和箭尾节点的执行次序',
-            rShort ? (rShort.source + '/' + rShort.via + ' conf=' + rShort.confidence) : 'null');
-
-        // 选项乱序 + 题干带题号 → 应靠指纹命中
-        var shuffled = ['箭头节点和箭尾节点的执行次序', '箭头节点和箭尾节点的并列关系',
-                        '箭头节点和箭尾节点的隶属关系', '箭头节点和箭尾节点的包含关系'];
-        var r2 = matchQuestion(idx, '1、前趋图中的边表示的是什么关系？', shuffled);
-        ok('选项乱序靠指纹命中', r2 && r2.rec && r2.rec.a[0] === '箭头节点和箭尾节点的执行次序',
-            r2 ? (r2.source + ' ' + r2.confidence) : 'null');
-
-        var r3 = matchQuestion(idx, '中国的首都是____', []);
-        ok('填空题靠精确匹配命中', r3 && r3.rec && r3.rec.a[0] === '北京', r3 ? r3.source : 'null');
-
-        // 题干完全相同但题库里两条答案冲突：必须判歧义
-        var r4 = matchQuestion(idx, '进程和线程最主要的区别是什么', ['是否拥有独立地址空间', '是否可并发执行']);
-        ok('同题干冲突答案判为歧义',
-            r4 && r4.source === 'ambiguous',
-            r4 ? (r4.source + ' ' + (r4.candidates ? r4.candidates.length : 0) + '个候选') : 'null');
-
-        // 题干相同且答案一致：可以放心用（题库重复但没冲突不该拖累命中率）
-        var dupIdx = buildBankIndex([
-            { q: '地球是圆的吗', t: 'judge', o: ['正确', '错误'], a: ['正确'], s: 'verified' },
-            { q: '地球是圆的吗', t: 'judge', o: ['正确', '错误'], a: ['正确'], s: 'llm' },
-        ]);
-        var rDup = matchQuestion(dupIdx, '地球是圆的吗', ['正确', '错误']);
-        ok('同题干同答案不判歧义',
-            rDup && rDup.rec && rDup.rec.a[0] === '正确',
-            rDup ? rDup.source : 'null');
-
-        var r5 = matchQuestion(idx, '完全不相干的一道题呢', ['甲', '乙']);
-        ok('无关题目不匹配', !r5, r5 ? r5.source : 'null');
-
-        // --- 指纹不可用时的降级 ---
-        var imgIdx = buildBankIndex([
-            { q: '看图选择题', t: 'single', o: ['', '', ''], a: [''], s: 'verified' }
-        ]);
-        ok('图片选项不建指纹', imgIdx.stats.noFingerprint === 1);
-
-        // --- 判断题词表 ---
-        ok('判断题真值词表', judgeValue('正确') === true && judgeValue('对') === true && judgeValue('T') === true);
-        ok('判断题假值词表', judgeValue('错误') === false && judgeValue('×') === false && judgeValue('否') === false);
-        // 子串匹配会把「不正确」里的「正确」当成真值，所以必须整串相等
-        ok('“不正确”不被误判为真',
-            judgeValue('不正确') === false && judgeValue('不对') === false);
-        ok('非判断题选项返回 null', judgeValue('箭头节点') === null && judgeValue('') === null);
-
-        // --- 题库合并：按来源可信度取胜，而不是按写入顺序 ---
-        var mA = [{ q: '地球是圆的吗', t: 'judge', o: ['正确', '错误'], a: ['正确'], s: 'llm' }];
-        var mB = [{ q: '地球是圆的吗', t: 'judge', o: ['正确', '错误'], a: ['错误'], s: 'verified' }];
-        var merged = mergeRecords([mA, mB]);
-        ok('冲突时高可信度胜出',
-            merged.records.length === 1 && merged.records[0].a[0] === '错误',
-            JSON.stringify(merged.records[0].a) + ' from ' + merged.records[0].s);
-        ok('冲突被记录下来', merged.conflicts.length === 1, String(merged.conflicts.length));
-        var merged2 = mergeRecords([mB, mA]);
-        ok('合并结果与写入顺序无关',
-            merged2.records.length === 1 && merged2.records[0].a[0] === '错误',
-            JSON.stringify(merged2.records[0].a));
-
-        // --- 演练规划：安全属性的核心测试 ---
-        function fakeQ(type, texts) {
-            return {
-                type: type,
-                options: texts.map(function (t, i) {
-                    return {
-                        letter: String.fromCharCode(65 + i), text: t,
-                        input: { type: type === 'multi' ? 'checkbox' : 'radio', checked: false }
-                    };
-                })
-            };
-        }
-        var mSingle = {
-            rec: { q: 'x', t: 'single', o: ['甲', '乙', '丙'], a: ['丙'], s: 'verified' },
-            source: 'exact', confidence: 1
-        };
-        var p1 = planQuestion(fakeQ('single', ['甲', '乙', '丙']), mSingle);
-        ok('答案能映射时给出要选的项',
-            p1.action === 'answer' && p1.picks.length === 1 && p1.picks[0].letter === 'C',
-            formatPicks(p1.picks));
-        // 契约定死：picks 必须是选项对象，作答要靠它重新定位 DOM 节点。
-        // 曾经这里是格式化好的字符串，结果 answerOne 一个选项都点不中，
-        // 而三个单元测试因为手写的 picks 是对象而全部通过——只有端到端测试抓到了。
-        ok('picks 是选项对象而非格式化字符串',
-            p1.picks[0] && typeof p1.picks[0] === 'object' && typeof p1.picks[0].text === 'string',
-            typeof p1.picks[0]);
-        // 页面选项和题库不一致 → 必须放弃，绝不能回退成「按索引选第 3 个」
-        var p2 = planQuestion(fakeQ('single', ['甲', '乙', '丁']), mSingle);
-        ok('答案映射不到页面选项时放弃', p2.action === 'pending', p2.reason);
-        var p3 = planQuestion(fakeQ('single', ['甲', '乙', '丙']), {
-            rec: { q: 'x', t: 'multi', o: ['甲'], a: ['甲'], s: 'verified' }, source: 'exact', confidence: 1
-        });
-        ok('题型不一致时放弃', p3.action === 'pending' && p3.reason.indexOf('题型不一致') !== -1, p3.reason);
-
-        var mMulti = {
-            rec: { q: 'x', t: 'multi', o: ['甲', '乙', '丙'], a: ['甲', '丙'], s: 'verified' },
-            source: 'exact', confidence: 1
-        };
-        var pm = planQuestion(fakeQ('multi', ['甲', '乙', '丙']), mMulti);
-        ok('多选题映射多个选项', pm.action === 'answer' && pm.picks.length === 2, JSON.stringify(pm.picks));
-        // 多选题只映射到一半也必须整题放弃，不能只勾一半去交
-        var pm2 = planQuestion(fakeQ('multi', ['甲', '乙', '戊']), mMulti);
-        ok('多选题部分映射成功也放弃', pm2.action === 'pending', pm2.reason);
-
-        var p4 = planQuestion({ type: 'unsupported', options: [] }, null);
-        ok('不支持的题型被显式跳过', p4.action === 'skip', p4.reason);
-        var p5 = planQuestion(fakeQ('single', ['甲', '乙']), { rec: null, source: 'ambiguous', candidates: [] });
-        ok('歧义命中不当作未命中处理',
-            p5.action === 'pending' && p5.reason.indexOf('歧义') !== -1, p5.reason);
-
-        var passed = lines.filter(function (l) { return l.indexOf('✅') === 0; }).length;
-        var summary = '自检 ' + passed + '/' + lines.length + ' 通过';
-        console.log('[MOOC答题自检]\n' + lines.join('\n'));
-        updateStatus((passed === lines.length ? '✅ ' : '⚠️ ') + summary);
-        return { summary: summary, lines: lines };
-    }
-
-    // ===================== 答题：页面解析 =====================
-    var QUIZ = {
-        item: '.u-questionItem',
-        choices: 'ul.choices > li',
-        optionPos: '.optionPos',
-        optionCnt: '.optionCnt',
-        iconTrue: '.u-icon-correct',
-        iconFalse: '.u-icon-wrong',
-        submitBtn: 'a.submit.j-submit, .j-submit',
-        replayBtn: 'a.submit.j-replay, .j-replay',
-    };
-
-    // 判断题的选项结构（已在页面上确证）：
-    //   <div class="optionCnt"><span class="u-icon-correct">::before</span></div>
-    // ✓ / ✗ 是【伪元素】渲染的图标字体，既不是文字节点也不是图片。
-    // 所以只有两条路可走，而只有一条可行：
-    //   - 读 textContent        → 空
-    //   - 读 ::before 的 content → "" 这种码点，读不出「正确」二字
-    //   - 读 class               → ✅ 唯一可行的
-    //
-    // 另必须说清楚：【这】u-icon-correct / u-icon-wrong 是选项内容本身（✓ 和 ✗），
-    // 不是答案标记。依据是已交卷页面：A 带 u-icon-correct、B 带 u-icon-wrong，
-    // 而页面同时写着「正确答案：B 你选对了」且 B 的 input 是 checked ——
-    // 若 ✓/✗ 是答案标记，正确答案不可能落在 ✗ 那一侧。
-    // 好处是含义直接编码在 class 里，不必依赖「A=正确」这种位置约定。
-    var JUDGE_TRUE_WORDS = ['正确', '对', '√', '✓', '✔', '是', 't', 'true', 'y', 'yes'];
-    var JUDGE_FALSE_WORDS = ['错误', '错', '×', '✕', '✗', '否', 'f', 'false', 'n', 'no', '不对', '不正确'];
-
-    function judgeValue(text) {
-        var t = normalizeOption(text);
-        if (!t) return null;
-        if (JUDGE_TRUE_WORDS.indexOf(t) !== -1) return true;
-        if (JUDGE_FALSE_WORDS.indexOf(t) !== -1) return false;
-        return null;
-    }
-
-    // 从类名语义推断图标含义。先判「错」再判「对」，否则 incorrect / 不对
-    // 这类含 correct 字样的类名会被误判成真值。
-    function iconClassJudge(cls) {
-        if (!cls) return null;
-        if (/incorrect|wrong|error|false/i.test(cls)) return false;
-        if (/correct|right|true/i.test(cls)) return true;
-        return null;
-    }
-
-    // 取选项里图标 span 的类名。已知类名优先；未知类名时取内部第一个 span，
-    // 供演练报告展示，方便别的课程用了不同命名时一眼看出问题。
-    function readOptionIconClass(li) {
-        var cnt = li.querySelector(QUIZ.optionCnt) || li;
-        var marked = cnt.querySelector(QUIZ.iconTrue) || cnt.querySelector(QUIZ.iconFalse);
-        if (marked) return String(marked.className || '');
-        var span = cnt.querySelector('span');
-        if (!span) return '';
-        return (typeof span.className === 'string') ? span.className : '';
-    }
-
-    // 读一个选项的正文。文字优先；没有文字时看是不是判断题的 ✓/✗ 图标。
-    function readOptionText(li) {
-        var cnt = li.querySelector(QUIZ.optionCnt);
-        var raw = cnt ? (cnt.textContent || '').replace(/\s+/g, ' ').trim() : '';
-        if (raw) return raw;
-        var v = iconClassJudge(readOptionIconClass(li));
-        if (v !== null) return v ? '正确' : '错误';
-        return '';
-    }
-
-    function readOptionLetter(li) {
-        var pos = li.querySelector(QUIZ.optionPos);
-        if (!pos) return '';
-        return (pos.textContent || '').replace(/[\s.、)）:：]/g, '');
-    }
-
-    // 题型判定。识别不了的题型必须显式标成 unsupported 并在演练里报出来，
-    // 否则「未解决计数」是错的，自动提交要么带着空题交、要么卡死。
-    // 目前未覆盖：不定项选择、连线/匹配、排序、共用词库的完形填空、填空/简答。
-    function classifyQuestion(options) {
-        if (options.length === 0) return 'unsupported';
-        var input = options[0].input;
-        if (!input) return 'unsupported';
-        var t = String(input.type || '').toLowerCase();
-        if (t === 'checkbox') return 'multi';
-        if (t === 'radio') {
-            if (options.length === 2) {
-                var a = judgeValue(options[0].text);
-                var b = judgeValue(options[1].text);
-                // 两个选项分属真/假两类且不重叠，才敢当判断题处理
-                if (a !== null && b !== null && a !== b) return 'judge';
-            }
-            return 'single';
-        }
-        return 'unsupported';
-    }
-
-    // 扫描页面题目。结构见计划文件里 Phase 0 的探测结果。
-    function scanQuestions() {
-        var items = document.querySelectorAll(QUIZ.item);
-        var out = [];
-        for (var i = 0; i < items.length; i++) {
-            var item = items[i];
-            // 站点自带的智能助教浮层里也有富文本，别把它算成题目
-            if (isAssistantNode(item)) continue;
-
-            var lis = item.querySelectorAll(QUIZ.choices);
-            var options = [];
-            for (var L = 0; L < lis.length; L++) {
-                options.push({
-                    el: lis[L],
-                    input: lis[L].querySelector('input'),
-                    letter: readOptionLetter(lis[L]),
-                    text: readOptionText(lis[L]),
-                    iconCls: readOptionIconClass(lis[L]),
-                });
-            }
-            var cls = String(item.className || '');
-            out.push({
-                el: item,
-                index: out.length,
-                mode: /examMode/.test(cls) ? 'exam'
-                    : (/analysisMode/.test(cls) ? 'analysis' : 'normal'),
-                stem: extractStemGuess(item),
-                options: options,
-                type: classifyQuestion(options),
-                answeredBy: (function (opts) {
-                    var picked = [];
-                    for (var k = 0; k < opts.length; k++) {
-                        if (opts[k].input && opts[k].input.checked) picked.push(opts[k].letter || String(k));
-                    }
-                    return picked;
-                })(options),
-            });
-        }
-        return out;
-    }
-
-    // 页面上能否重做（决定试错学习是否可行，以及自动提交敢不敢开）
-    function hasReplayEntry() {
-        var btn = document.querySelector(QUIZ.replayBtn);
-        return !!(btn && isVisible(btn));
-    }
-
-    // ===================== 答题：题库存取 =====================
-    // 目前只有 localStorage 一条来源。远程 JSON 拉取是 Phase 5，
-    // 现在先用「粘贴导入」把整条流水线跑通，不引网络依赖。
-    var STORE_KEYS = {
-        imported: 'mar.bank.imported',
-        learned: 'mar.bank.learned',
-    };
-
-    function readStore(key, fallback) {
-        try {
-            var raw = localStorage.getItem(key);
-            if (!raw) return fallback;
-            return JSON.parse(raw);
-        } catch (e) {
-            console.warn('[MOOC答题] 读取本地存储失败', key, e);
-            return fallback;
-        }
-    }
-
-    function writeStore(key, val) {
-        try {
-            localStorage.setItem(key, JSON.stringify(val));
-            return true;
-        } catch (e) {
-            console.warn('[MOOC答题] 写入本地存储失败', key, e);
-            return false;
-        }
-    }
-
-    // 导入的题库 + 本地累积的题合并。同题冲突按来源可信度取高的，
-    // 而不是按「谁写在后面」——否则一条 llm 记录会盖掉 verified。
-    var SOURCE_RANK = { scraped: 4, verified: 3, manual: 2, llm: 1 };
-
-    function rankOf(s) {
-        return SOURCE_RANK[s] || 0;
-    }
-
-    function mergeRecords(lists) {
-        var byKey = new Map(), conflicts = [];
-        for (var i = 0; i < lists.length; i++) {
-            var recs = lists[i] || [];
-            for (var j = 0; j < recs.length; j++) {
-                var rec = recs[j];
-                if (!rec || !rec.q) continue;
-                var key = normalizeStem(rec.q) + BANK_CONFIG.SEP +
-                    (rec.o || []).map(normalizeOption).slice().sort().join(BANK_CONFIG.SEP);
-                var prev = byKey.get(key);
-                if (!prev) { byKey.set(key, rec); continue; }
-                var winner = rankOf(rec.s) > rankOf(prev.s) ? rec : prev;
-                var loser = winner === rec ? prev : rec;
-                byKey.set(key, winner);
-                if (answerKey(winner) !== answerKey(loser)) {
-                    conflicts.push({ q: winner.q, kept: winner.a, keptFrom: winner.s, dropped: loser.a, droppedFrom: loser.s });
-                }
-            }
-        }
-        var out = [];
-        byKey.forEach(function (v) { out.push(v); });
-        return { records: out, conflicts: conflicts };
-    }
-
-    function getBankRecords() {
-        var imported = readStore(STORE_KEYS.imported, []);
-        var learned = readStore(STORE_KEYS.learned, []);
-        var merged = mergeRecords([imported.questions || imported, learned]);
-        if (merged.conflicts.length) {
-            console.warn('[MOOC答题] 题库存在冲突记录', merged.conflicts);
-        }
-        return merged;
-    }
-
-    // ===================== 答题：只读演练 =====================
-    // 不点击任何东西。目的是在真正作答之前，把「会选哪个」摊开给人看。
-    function planQuestion(q, match) {
-        if (q.type === 'unsupported') {
-            return { action: 'skip', reason: '题型不支持（' + q.options.length + ' 个选项）' };
-        }
-        if (!match || !match.rec) {
-            if (match && match.source === 'ambiguous') {
-                return { action: 'pending', reason: '题库里有多条冲突记录，判为歧义' };
-            }
-            return { action: 'pending', reason: '题库未命中' };
-        }
-        var rec = match.rec;
-
-        // 同一题里出现重复的选项正文时，按文本定位会张冠李戴（分不清该点哪一个）
-        var seen = {}, dup = false;
-        for (var z = 0; z < q.options.length; z++) {
-            var okey = normalizeOption(q.options[z].text);
-            if (!okey) continue;
-            if (seen[okey]) { dup = true; break; }
-            seen[okey] = 1;
-        }
-        if (dup) return { action: 'pending', reason: '该题存在重复的选项正文，无法按文本定位' };
-
-        // 题型必须一致，不一致宁可不用
-        if (rec.t && q.type !== 'judge' && rec.t !== q.type) {
-            return { action: 'pending', reason: '题型不一致（题库 ' + rec.t + ' / 页面 ' + q.type + '）' };
-        }
-
-        var picks = [], miss = [];
-        for (var i = 0; i < (rec.a || []).length; i++) {
-            var want = normalizeAnswer(rec.a[i]);
-            var found = null;
-            for (var k = 0; k < q.options.length; k++) {
-                if (normalizeOption(q.options[k].text) === want) { found = q.options[k]; break; }
-            }
-            if (found) picks.push(found);
-            else miss.push(rec.a[i]);
-        }
-        // 任一答案文本映射不到页面选项 → 整题放弃，绝不回退到「按索引选第 N 个」
-        if (miss.length > 0 || picks.length === 0) {
-            return {
-                action: 'pending',
-                reason: '答案文本映射不到页面选项：' + miss.map(function (m) { return JSON.stringify(m); }).join('、')
-            };
-        }
-        return {
-            action: 'answer',
-            source: match.source,
-            confidence: match.confidence,
-            // 返回选项对象而不是格式化字符串：作答时要拿它重新定位 DOM 节点。
-            // 展示用的字符串由 formatPicks() 生成。
-            picks: picks,
-        };
-    }
-
-    function formatPicks(picks) {
-        var out = [];
-        for (var i = 0; i < (picks || []).length; i++) {
-            out.push((picks[i].letter || '?') + '. ' + picks[i].text);
-        }
-        return out.join(' | ');
-    }
-
-    function runQuizDryRun() {
-        var questions = scanQuestions();
-        if (questions.length === 0) {
-            updateStatus('❌ 本页未识别到题目块（' + QUIZ.item + '）');
-            return;
-        }
-        var bank = getBankRecords();
-        if (bank.records.length === 0) {
-            updateStatus('⚠️ 题库为空，请先用「导入题库」粘贴 JSON；本次只报告页面解析结果');
-        }
-        var idx = buildBankIndex(bank.records);
-
-        var lines = [];
-        lines.push('页面: ' + location.href);
-        lines.push('题目: ' + questions.length + ' 道    题库: ' + bank.records.length + ' 条'
-            + (bank.conflicts.length ? '（存在 ' + bank.conflicts.length + ' 条冲突）' : ''));
-        lines.push('可重做: ' + (hasReplayEntry() ? '是' : '否/未检测到'));
-        lines.push('');
-
-        var stat = { answer: 0, pending: 0, skip: 0 };
-        for (var i = 0; i < questions.length; i++) {
-            var q = questions[i];
-            var match = q.type === 'unsupported' ? null
-                : matchQuestion(idx, q.stem, q.options.map(function (o) { return o.text; }));
-            var plan = planQuestion(q, match);
-            stat[plan.action]++;
-
-            var head = (i + 1) + '. [' + q.type + '/' + q.mode + '] ';
-            if (plan.action === 'answer') {
-                lines.push(head + '✅ 会选 → ' + formatPicks(plan.picks)
-                    + '   （' + plan.source + ' conf=' + (plan.confidence || 0).toFixed(3) + '）');
-            } else if (plan.action === 'pending') {
-                lines.push(head + '❓ 未解决 → ' + plan.reason);
-            } else {
-                lines.push(head + '⏭ 跳过 → ' + plan.reason);
-            }
-            lines.push('   题干: ' + q.stem.slice(0, 70));
-            var optLine = [];
-            for (var o = 0; o < q.options.length; o++) {
-                var op = q.options[o];
-                var label = op.text;
-                // 正文为空时把图标类名带出来——别的课程若用了不同命名，这里一眼能看见
-                if (!label) label = op.iconCls ? ('(图标 ' + op.iconCls + ')') : '(空)';
-                optLine.push(op.letter + '.' + label);
-            }
-            lines.push('   选项: ' + optLine.join(' | ').slice(0, 150));
-            if (match && match.candidates) {
-                for (var c = 0; c < match.candidates.length; c++) {
-                    var cd = match.candidates[c];
-                    var sc = (typeof cd.score === 'number') ? (' conf=' + cd.score.toFixed(3)) : '';
-                    lines.push('      候选' + (c + 1) + ': ' + String(cd.q).slice(0, 40)
-                        + sc + '  答案=' + JSON.stringify(cd.a || []).slice(0, 40)
-                        + (cd.s ? '  来源=' + cd.s : ''));
-                }
-            }
-            lines.push('');
-        }
-        lines.push('=== 汇总：会作答 ' + stat.answer + ' 道，未解决 ' + stat.pending + ' 道，跳过 ' + stat.skip + ' 道 ===');
-
-        var text = lines.join('\n');
-        console.log('[MOOC答题演练]\n' + text);
-        showTextOverlay('只读演练 · 不会点击任何选项', text);
-        updateStatus('🔎 演练完成：会作答 ' + stat.answer + ' 道，未解决 ' + stat.pending + ' 道，跳过 ' + stat.skip + ' 道（未做任何操作）');
-    }
-
-    // ===================== 答题：作答 =====================
-    // 每题之间的间隔是随机的。固定 300ms 连点二十道题是个很容易被识别的模式，
-    // 考试场景还可能有防作弊在看节奏。
-    function quizPace() {
-        var lo = CONFIG.QUIZ_DELAY_MIN, hi = CONFIG.QUIZ_DELAY_MAX;
-        return lo + Math.floor(Math.random() * (hi - lo + 1));
-    }
-
-    // 复选框要显式设定目标状态，不能无条件 toggle —— 重复进入同一页会把已选中的反选掉
-    function ensureChecked(input, want) {
-        if (!input) return false;
-        if (!!input.checked !== !!want) realClick(input);
-        // 点完再验一次：有的站点会用自己的逻辑接管点击
-        if (!!input.checked !== !!want) {
-            input.checked = !!want;
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        return !!input.checked === !!want;
-    }
-
-    // SPA 会重渲染，匹配时拿到的元素引用到点击时可能已经失效——轻则静默点空，
-    // 重则点到被复用的节点上。所以每次点击前都从题目容器重新解析一遍，
-    // 断言归一化文本仍与计划一致，不一致就重解析。
-    function reResolveOption(q, pick) {
-        var want = normalizeOption(pick.text);
-        var lis = q.el.querySelectorAll(QUIZ.choices);
-        for (var i = 0; i < lis.length; i++) {
-            if (normalizeOption(readOptionText(lis[i])) === want) {
-                return { el: lis[i], input: lis[i].querySelector('input') };
-            }
-        }
-        return null;
-    }
-
-    function markUncertain(q, reason) {
-        if (!q.el) return;
-        q.el.classList.add('mar-uncertain');
-        try { q.el.setAttribute('title', '未作答：' + reason); } catch (e) { /* ignore */ }
-    }
-
-    async function answerOne(q, plan) {
-        var done = 0, failed = [];
-        var want = {}, i;
-
-        for (i = 0; i < plan.picks.length; i++) {
-            want[normalizeOption(plan.picks[i].text)] = 1;
-        }
-
-        // 多选题：先把不该选的摘掉。radio 天然互斥（点新的会自动取消旧的），
-        // 但 checkbox 没有这个行为——页面里遗留的勾会被一起提交，静默多选错项。
-        if (q.type === 'multi') {
-            var lis = q.el.querySelectorAll(QUIZ.choices);
-            for (var d = 0; d < lis.length; d++) {
-                var cb = lis[d].querySelector('input');
-                if (!cb || String(cb.type || '').toLowerCase() !== 'checkbox') continue;
-                if (want[normalizeOption(readOptionText(lis[d]))]) continue;
-                if (cb.checked) {
-                    ensureChecked(cb, false);
-                    await sleep(quizPace());
-                }
-            }
-        }
-
-        for (i = 0; i < plan.picks.length; i++) {
-            var fresh = reResolveOption(q, plan.picks[i]);
-            if (!fresh || !fresh.input) { failed.push(plan.picks[i].text); continue; }
-            var ok;
-            if (String(fresh.input.type || '').toLowerCase() === 'checkbox') {
-                ok = ensureChecked(fresh.input, true);
-            } else {
-                selectRadio(fresh.input);
-                ok = !!fresh.input.checked;
-            }
-            if (ok) done++; else failed.push(plan.picks[i].text);
-            await sleep(quizPace());
-        }
-        return { done: done, failed: failed };
-    }
-
-    // ---- 自动提交开关 ----
-    // 这是用户可切换的开关，但真正的安全闸门在 canAutoSubmit() 里：
-    // 光把开关打开还不够，未解决题目数和页面类型都会再拦一道。
-    var AUTOSUBMIT_KEY = 'mar.quizAutoSubmit';
-
-    function isAutoSubmitOn() {
-        return readStore(AUTOSUBMIT_KEY, CONFIG.QUIZ_AUTO_SUBMIT) === true;
-    }
-
-    function updateAutoSubmitButton() {
-        var btn = document.getElementById('mar-quiz-autosubmit');
-        if (!btn) return;
-        var on = isAutoSubmitOn();
-        btn.textContent = '自动提交：' + (on ? '开' : '关');
-        if (on) btn.classList.add('mar-on'); else btn.classList.remove('mar-on');
-    }
-
-    function toggleAutoSubmit() {
-        var next = !isAutoSubmitOn();
-        writeStore(AUTOSUBMIT_KEY, next);
-        updateAutoSubmitButton();
-        updateTabAlert();
-        if (next && detectPageType() === 'exam') {
-            updateStatus('⚠️ 自动提交开关已打开，但当前是考试页——仍会被硬阻断（只能提交一次，不替你冒这个险）');
-        } else {
-            updateStatus(next
-                ? '自动提交：开（但只要还有未解决的题目就不会提交）'
-                : '自动提交：关。作答完会红框标出未解决的题，由你检查后手动提交');
-        }
-    }
-
-    // 自动提交的三道闸门，任一条不满足就只作答、把提交留给人
-    function canAutoSubmit(unresolvedCount) {
-        if (!isAutoSubmitOn()) return { ok: false, why: '自动提交开关是关的' };
-        if (detectPageType() === 'exam') {
-            return { ok: false, why: '考试页硬阻断自动提交（只能提交一次，失误无法挽回）' };
-        }
-        if (unresolvedCount > 0) {
-            return { ok: false, why: '还有 ' + unresolvedCount + ' 道题未解决' };
-        }
-        return { ok: true };
-    }
-
-    function getQuizSubmitButton() {
-        var btn = document.querySelector(QUIZ.submitBtn);
-        if (btn && isVisible(btn) && !btn.disabled) return btn;
-        return null;
-    }
-
-    async function runQuizAnswer() {
-        var questions = scanQuestions();
-        if (questions.length === 0) { updateStatus('❌ 本页未识别到题目'); return; }
-
-        var bank = getBankRecords();
-        var idx = buildBankIndex(bank.records);
-
-        var oldMarks = document.querySelectorAll('.mar-uncertain');
-        for (var m = 0; m < oldMarks.length; m++) oldMarks[m].classList.remove('mar-uncertain');
-
-        var answered = 0, unresolved = 0, skipped = 0;
-        var limit = Math.min(questions.length, CONFIG.QUIZ_MAX_ANSWER);
-
-        for (var i = 0; i < limit; i++) {
-            if (taskState.cancelled) throw makeCancelError();
-            var q = questions[i];
-
-            if (q.type === 'unsupported') {
-                skipped++;
-                markUncertain(q, '题型暂不支持');
-                continue;
-            }
-            var match = matchQuestion(idx, q.stem, q.options.map(function (o) { return o.text; }));
-            var plan = planQuestion(q, match);
-            if (plan.action !== 'answer') {
-                unresolved++;
-                markUncertain(q, plan.reason);
-                continue;
-            }
-            if (plan.confidence < CONFIG.QUIZ_CONFIDENCE_MIN) {
-                unresolved++;
-                markUncertain(q, '置信度 ' + plan.confidence.toFixed(2) + ' 低于阈值 ' + CONFIG.QUIZ_CONFIDENCE_MIN);
-                continue;
-            }
-
-            updateStatus('作答中... ' + (i + 1) + '/' + limit);
-            var r = await answerOne(q, plan);
-            if (r.failed.length > 0) {
-                unresolved++;
-                markUncertain(q, '有选项点击失败：' + r.failed.join('、'));
-            } else {
-                answered++;
-            }
-        }
-
-        var gate = canAutoSubmit(unresolved);
-        var summary = '已作答 ' + answered + ' 题，未解决 ' + unresolved + ' 题'
-            + (skipped ? '，跳过 ' + skipped + ' 题（题型不支持）' : '');
-
-        if (gate.ok) {
-            var btn = getQuizSubmitButton();
-            if (!btn) {
-                updateStatus('⚠️ ' + summary + '；未找到可见的提交按钮，请手动提交');
-                return;
-            }
-            updateStatus('⏳ ' + summary + '，正在提交...');
-            realClick(btn);
-            await sleep(CONFIG.DELAY_AFTER_SUBMIT);
-            await dismissModal();
-            updateStatus('✅ ' + summary + '，已提交');
-        } else {
-            // 红框标出未解决的题，让人一眼看到该补哪几道
-            updateStatus('📝 ' + summary + '；未自动提交（' + gate.why + '），请检查后手动提交');
-        }
-    }
-
-    function importBankPrompt() {
-        var cur = readStore(STORE_KEYS.imported, null);
-        showTextOverlay(
-            '导入题库 · 粘贴 JSON 后点保存',
-            cur ? JSON.stringify(cur, null, 2) : '{\n  "schemaVersion": 1,\n  "questions": [\n    { "q": "题干原文", "t": "single", "o": ["选项A","选项B"], "a": ["选项A"], "s": "verified" }\n  ]\n}',
-            function (val) {
-                var parsed;
-                try {
-                    parsed = JSON.parse(val);
-                } catch (e) {
-                    updateStatus('❌ JSON 解析失败：' + e.message);
-                    return;
-                }
-                var recs = parsed.questions || parsed;
-                if (!(recs instanceof Array)) {
-                    updateStatus('❌ 格式不对：应为 {schemaVersion, questions:[...]} 或直接是题目数组');
-                    return;
-                }
-                writeStore(STORE_KEYS.imported, { schemaVersion: parsed.schemaVersion || 1, questions: recs });
-                var check = getBankRecords();
-                updateStatus('✅ 已导入 ' + recs.length + ' 条题目'
-                    + (check.conflicts.length ? '，其中 ' + check.conflicts.length + ' 条存在答案冲突' : ''));
-                console.log('[MOOC答题] 导入后的题库', check);
-            }
-        );
     }
 
     // ===================== 页面类型判定 =====================
@@ -1832,429 +838,629 @@
         updateStatus('已达安全上限 ' + CONFIG.MAX_ITERATIONS + ' 份，停止');
     }
 
-    // ===================== 答题探针（诊断用，不修改页面状态） =====================
-    // 用途：在真实答题页上把 DOM 结构、题型标记、提交按钮、剩余次数、页面 JS 全局变量
-    // 和 XHR/fetch 请求形状 dump 出来，作为编写选择题选择器和决定数据来源的依据。
-    // 探针只读 DOM、只包裹网络方法，不点击任何按钮、不修改任何输入。
+    // ===================== 课堂讨论：自动回复 =====================
+    // 从「已经有人回复过的区域」里挑一条现成答复作为回复正文。
+    // 两种来源：最新的一条 / 点赞最多的一条，默认最新，可在「设置」里切换。
+    //
+    // 与互评同一套安全原则：
+    //   1. 选不出正文就什么都不做——绝不拿占位文本凑数，也绝不自己编内容
+    //   2. 同一条讨论只回复一次（本地留痕），防止重复刷屏
+    //   3. 只写「回复输入框」，不碰页面上其它可编辑区
+    //   4. 提供预览，先让人看见要发出去的是什么，再决定发不发
+    var DISCUSS = {
+        KEY_SOURCE: 'mar.discuss.source',
+        KEY_HISTORY: 'mar.discuss.history',
 
-    var netLog = [];
-    var netProbeInstalled = false;
+        SOURCE_LATEST: 'latest',
+        SOURCE_LIKED: 'liked',
 
-    function describeShape(obj, depth, maxDepth) {
-        if (obj === null) return 'null';
-        if (obj === undefined) return 'undefined';
-        if (depth >= maxDepth) return typeof obj;
-        if (Object.prototype.toString.call(obj) === '[object Array]') {
-            if (obj.length === 0) return '[]';
-            return '[' + obj.length + ' x ' + describeShape(obj[0], depth + 1, maxDepth) + ']';
-        }
-        if (typeof obj === 'object') {
-            var parts = [], n = 0;
-            for (var k in obj) {
-                if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
-                if (n++ >= 25) { parts.push('...'); break; }
-                // 答案类字段直接把值带出来——探针的核心目的就是确认答案是否已在响应里
-                if (/answer|correct|right|key|result|score/i.test(k)) {
-                    var sv;
-                    try { sv = JSON.stringify(obj[k]); } catch (e) { sv = '(无法序列化)'; }
-                    parts.push(k + ': ' + String(sv).slice(0, 120));
-                } else {
-                    parts.push(k + ': ' + describeShape(obj[k], depth + 1, maxDepth));
-                }
+        // 已回复区域的容器：命中任一且能解析出答复就采用，数组顺序即优先级
+        listSelectors: [
+            '[class*="reply-list"]', '[class*="replyList"]', '[class*="reply_list"]',
+            '[class*="comment-list"]', '[class*="commentList"]', '[class*="comment_list"]',
+            '[class*="post-list"]', '[class*="postList"]',
+            '[class*="answer-list"]', '[class*="answerList"]',
+            '[class*="discuss-list"]', '[class*="discussion-list"]',
+            '[class*="forum-list"]', '[class*="reply-area"]', '[class*="replyArea"]',
+            '[class*="comment-area"]', '[class*="topic-reply"]',
+            '.j-replyList', '.m-replyList', '.j-commentList', '.m-commentList',
+            '.j-comment-list', '.reply-list', '.comment-list', '.j-comment-list-wrapper',
+            '.replies-wrapper', '[class*="replies"]', '[class*="topic-replies"]',
+            // 新版 UI（mooc- 前缀，BEM 命名）
+            '[class*="mooc-comment"]', '[class*="mooc-discuss"]', '[class*="mooc-reply"]',
+            '[class*="mooc-comment__list"]', '[class*="mooc-discuss__list"]', '[class*="mooc-reply__list"]',
+        ],
+
+        // 容器之内的楼层节点
+        itemSelectors: [
+            '[class*="reply-item"]', '[class*="replyItem"]',
+            '[class*="comment-item"]', '[class*="commentItem"]',
+            '[class*="post-item"]', '[class*="postItem"]',
+            '[class*="answer-item"]', '[class*="answerItem"]',
+            '[class*="discuss-item"]', '[class*="discussion-item"]',
+            '[class*="floor"]', '[class*="reply-card"]', '[class*="replyCard"]',
+            '.j-reply-item', '.reply-item', '.j-comment-item', '.reply-container', '.reply-main',
+            // 新版 UI
+            '[class*="mooc-comment__item"]', '[class*="mooc-discuss__item"]', '[class*="mooc-reply__item"]',
+            '[class*="mooc-comment-item"]', '[class*="mooc-discuss-item"]', '[class*="mooc-reply-item"]',
+            'li', '.item',
+        ],
+
+        // 楼层里的正文节点，按顺序优先（越靠前越像“正文”本身）
+        contentSelectors: [
+            '[class*="reply-content"]', '[class*="replyContent"]',
+            '[class*="comment-content"]', '[class*="commentContent"]',
+            '[class*="post-content"]', '[class*="postContent"]',
+            '[class*="answer-content"]', '[class*="answerContent"]',
+            '[class*="reply-text"]', '[class*="comment-text"]', '[class*="post-text"]',
+            '[class*="content"]', '[class*="text"]', '[class*="body"]', '[class*="desc"]',
+            '.reply-content', '.j-reply-content', '.j-topic-content', '.topic-content',
+            '[class*="article-content"]',
+            // 新版 UI
+            '[class*="mooc-comment__content"]', '[class*="mooc-discuss__content"]', '[class*="mooc-reply__content"]',
+            '[class*="mooc-comment__text"]', '[class*="mooc-comment-content"]',
+            'p',
+        ],
+
+        // 点赞数所在节点
+        likeSelectors: [
+            '[class*="like"]', '[class*="praise"]', '[class*="thumb"]',
+            '[class*="vote"]', '[class*="agree"]', '[class*="zan"]', '[class*="up-count"]',
+            '.j-icon-up', '.u-icon-vote', '.j-num',
+            '[class*="mooc-comment__like"]', '[class*="mooc-comment__vote"]', '[class*="mooc-like"]', '[class*="mooc-vote"]',
+        ],
+
+        // 时间所在节点
+        timeSelectors: [
+            'time', '[class*="time"]', '[class*="date"]', '[class*="create"]', '[class*="publish"]',
+            '.reply-item-info', '[class*="replyInfo"]',
+        ],
+
+        // 编辑器所在作用域：先在这些容器里找输入框，找不到才看整页
+        editorScopeSelectors: [
+            '[class*="reply-editor"]', '[class*="replyEditor"]', '[class*="reply-input"]',
+            '[class*="comment-editor"]', '[class*="comment-input"]', '[class*="post-editor"]',
+            '[class*="editor"]', '[class*="reply-box"]', '[class*="replyBox"]',
+            '[class*="comment-box"]', '[class*="reply-area"]', '[class*="replyArea"]',
+            '[class*="discuss"]', '[class*="forum"]', 'form',
+            '.j-editor-wrapper', '[class*="editor-textarea"]', '.editor-textarea', '.reply-editor',
+            // 新版 UI
+            '[class*="mooc-comment"]', '[class*="mooc-discuss"]', '[class*="mooc-reply"]',
+            '[class*="mooc-comment__editor"]', '[class*="mooc-comment__input"]', '[class*="mooc-comment__submit"]',
+        ],
+
+        // 发布按钮：整串相等才算，避免误点到楼层的「回复」小链接
+        submitText: /^(发布|发表|回复|提交|发送|评论|发表回复|发布回复|提交回复|提交答案|发表评论|发布评论|确定)$/,
+        // 输入框里的占位提示。看到这类文本要当成“空的”，可以直接覆盖
+        placeholderText: /请输入|说点什么|写下|来说两句|回复一下|发表你的|添加回复|写回复|期待你的|分享你的/,
+        // 元信息节点（作者名 / 时间 / 点赞条），正文提取时要避开
+        metaClass: /name|author|user|avatar|nick|time|date|like|praise|vote|agree|tool|oper|action/i,
+    };
+
+    function getDiscussSource() {
+        var v = readStore(DISCUSS.KEY_SOURCE, DISCUSS.SOURCE_LATEST);
+        return (v === DISCUSS.SOURCE_LIKED) ? DISCUSS.SOURCE_LIKED : DISCUSS.SOURCE_LATEST;
+    }
+
+    function setDiscussSource(v) {
+        writeStore(DISCUSS.KEY_SOURCE, v === DISCUSS.SOURCE_LIKED ? DISCUSS.SOURCE_LIKED : DISCUSS.SOURCE_LATEST);
+        updateSourceSeg();
+    }
+
+    function sourceLabel(v) {
+        return v === DISCUSS.SOURCE_LIKED ? '点赞最多' : '最新答复';
+    }
+
+    // ===================== 课堂讨论：解析已回复区域 =====================
+    // 多选择器取并集并按数组顺序去重。单个选择器经常只能覆盖一种版式，
+    // 全站还有好几套模板，所以是「并集 + 优先级」而不是「命中一个就走」。
+    function collectCandidates(scope, selectors, limit) {
+        var out = [], seen = [];
+        for (var s = 0; s < selectors.length && out.length < limit; s++) {
+            var found;
+            try { found = scope.querySelectorAll(selectors[s]); } catch (e) { continue; }
+            for (var i = 0; i < found.length && out.length < limit; i++) {
+                if (seen.indexOf(found[i]) !== -1) continue;
+                seen.push(found[i]);
+                out.push(found[i]);
             }
-            return '{' + parts.join(', ') + '}';
         }
-        return typeof obj;
+        return out;
     }
 
-    function installNetworkProbe() {
-        if (netProbeInstalled) return;
-        netProbeInstalled = true;
-
-        var origOpen = XMLHttpRequest.prototype.open;
-        var origSend = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function (method, url) {
-            this.__marMethod = method;
-            this.__marUrl = url;
-            return origOpen.apply(this, arguments);
-        };
-        XMLHttpRequest.prototype.send = function () {
-            var xhr = this;
-            var url = String(xhr.__marUrl || '');
-            if (/quiz|exam|paper|answer|dwr|homework|test/i.test(url)) {
-                xhr.addEventListener('load', function () {
-                    var shape;
-                    try { shape = describeShape(JSON.parse(xhr.responseText), 0, 3); }
-                    catch (e) { shape = '(非 JSON，长度 ' + (xhr.responseText || '').length + ')'; }
-                    var entry = { via: 'xhr', method: xhr.__marMethod, url: url, status: xhr.status, shape: shape };
-                    netLog.push(entry);
-                    console.log('[MOOC答题探针] 网络请求', entry);
-                });
+    // 只保留最外层：楼层里嵌套的子回复会被反复统计，也会让正文串成一大坨
+    function keepOutermost(els) {
+        return els.filter(function (el) {
+            for (var i = 0; i < els.length; i++) {
+                if (els[i] !== el && els[i].contains(el)) return false;
             }
-            return origSend.apply(this, arguments);
-        };
-
-        if (typeof window.fetch === 'function') {
-            var origFetch = window.fetch;
-            window.fetch = function (input, init) {
-                var url = String((typeof input === 'string') ? input : (input && input.url) || '');
-                var p = origFetch.apply(this, arguments);
-                if (/quiz|exam|paper|answer|dwr|homework|test/i.test(url)) {
-                    p.then(function (resp) {
-                        return resp.clone().text().then(function (text) {
-                            var shape;
-                            try { shape = describeShape(JSON.parse(text), 0, 3); }
-                            catch (e) { shape = '(非 JSON，长度 ' + text.length + ')'; }
-                            var entry = {
-                                via: 'fetch',
-                                method: (init && init.method) || 'GET',
-                                url: url, status: resp.status, shape: shape
-                            };
-                            netLog.push(entry);
-                            console.log('[MOOC答题探针] 网络请求', entry);
-                        });
-                    }).catch(function () { /* 探针自身不得影响页面请求 */ });
-                }
-                return p;
-            };
-        }
-        console.log('[MOOC答题探针] 网络探针已安装，后续 /quiz|exam|paper|answer/ 相关请求会被记录');
+            return true;
+        });
     }
 
-    var PROBE_SELECTORS = [
-        '.j-question', '.u-question', '.m-question', '.question', '.q-item',
-        '.j-que', '.u-que', '.que-item', '.item-question', '.u-questionItem',
-        '[data-question]', '[class*="question"]', '[class*="subject"]',
-        '[class*="ques"]', '.m-list .item', '.j-list .item', '.list .item',
-    ];
-
-    function probeSelectors() {
-        var out = [];
-        for (var i = 0; i < PROBE_SELECTORS.length; i++) {
-            var n = 0;
-            try { n = document.querySelectorAll(PROBE_SELECTORS[i]).length; } catch (e) { n = -1; }
-            if (n > 0) out.push({ selector: PROBE_SELECTORS[i], count: n });
-        }
-        return out;
+    function cleanText(s) {
+        return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ' ').trim();
     }
 
-    // 从选项 input 往上爬祖先链——这直接给出“题块容器该用哪一层”的答案
-    function ancestorLadder(el, maxDepth) {
-        var out = [], cur = el, d = 0;
-        while (cur && cur !== document.body && d < maxDepth) {
-            var txt = (cur.textContent || '').replace(/\s+/g, ' ').trim();
-            var cls = (typeof cur.className === 'string') ? cur.className : '';
-            out.push({
-                depth: d,
-                tag: cur.tagName,
-                id: cur.id || '',
-                cls: cls.slice(0, 120),
-                inputs: cur.querySelectorAll('input, textarea, select').length,
-                textLen: txt.length,
-                textHead: txt.slice(0, 120)
-            });
-            cur = cur.parentElement;
-            d++;
-        }
-        return out;
+    function isPlaceholderText(t) {
+        return !t || DISCUSS.placeholderText.test(t);
     }
 
-    function probeInputs(scope) {
-        var out = [];
-        var els = scope.querySelectorAll('input, textarea, select');
-        for (var i = 0; i < els.length && i < 30; i++) {
-            var e = els[i];
-            out.push({
-                tag: e.tagName,
-                type: e.type || '',
-                name: e.name || '',
-                id: e.id || '',
-                value: (e.value || '').slice(0, 40),
-                checked: !!e.checked,
-                cls: ((typeof e.className === 'string') ? e.className : '').slice(0, 80),
-                editable: e.getAttribute ? (e.getAttribute('contenteditable') || '') : ''
-            });
-        }
-        return out;
+    function firstNumberInText(text) {
+        var m = String(text || '').match(/\d+/);
+        return m ? parseInt(m[0], 10) : null;
     }
 
-    function probeOptionLabels(scope) {
-        var out = [];
-        var els = scope.querySelectorAll('label, li, .option, [class*="option"], [class*="item"]');
-        for (var i = 0; i < els.length && i < 30; i++) {
-            var e = els[i];
-            if (e.children.length > 3) continue; // 跳过明显是容器的节点
-            var t = (e.textContent || '').replace(/\s+/g, ' ').trim();
+    function readAttrNumber(el, attrs) {
+        for (var i = 0; i < attrs.length; i++) {
+            var v = el.getAttribute ? el.getAttribute(attrs[i]) : null;
+            if (!v) continue;
+            var n = parseFloat(v);
+            if (!isNaN(n)) return n;
+        }
+        return null;
+    }
+
+    // 楼层里的点赞数。取「属性优先、文本兜底、多条取最大」，
+    // 认不出来时返回 null（而不是 0），好让上层区分「0 个赞」和「没解析到」。
+    function readLikeCount(item) {
+        var els = collectCandidates(item, DISCUSS.likeSelectors, 30);
+        var best = null;
+        for (var i = 0; i < els.length; i++) {
+            var n = readAttrNumber(els[i], ['data-count', 'data-num', 'data-number', 'data-like', 'data-praise', 'data-total']);
+            if (n === null) n = readAttrNumber(els[i], ['title', 'aria-label']);
+            if (n === null) n = firstNumberInText(els[i].textContent);
+            if (n === null || isNaN(n)) continue;
+            if (best === null || n > best) best = n;
+        }
+        return best;
+    }
+
+    // 时间只用于排序，解析不出来返回 null，上层会退化成按页面顺序排
+    function parseTimeToMs(text) {
+        var s = cleanText(text);
+        if (!s) return null;
+        var now = Date.now(), m;
+
+        m = s.match(/(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})日?(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+        if (m) {
+            return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10),
+                parseInt(m[4] || 0, 10), parseInt(m[5] || 0, 10), parseInt(m[6] || 0, 10)).getTime();
+        }
+        m = s.match(/(\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?/);
+        if (m) {
+            var mo = parseInt(m[1], 10), d = parseInt(m[2], 10);
+            if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+                var dt = new Date(new Date().getFullYear(), mo - 1, d,
+                    parseInt(m[3] || 0, 10), parseInt(m[4] || 0, 10));
+                // 落在未来一年以上说明是去年的贴子，往回拨一年
+                if (dt.getTime() > now + 86400000) dt.setFullYear(dt.getFullYear() - 1);
+                return dt.getTime();
+            }
+        }
+        m = s.match(/(\d+)\s*(秒|分钟|分|小时|天|周|个月|月)前/);
+        if (m) {
+            var unit = { '秒': 1000, '分钟': 60000, '分': 60000, '小时': 3600000, '天': 86400000, '周': 604800000, '个月': 2592000000, '月': 2592000000 };
+            return now - parseInt(m[1], 10) * (unit[m[2]] || 0);
+        }
+        if (/刚刚|刚才/.test(s)) return now;
+        if (/昨天/.test(s)) return now - 86400000;
+        if (/前天/.test(s)) return now - 2 * 86400000;
+        return null;
+    }
+
+    function readTimeInfo(item) {
+        var els = collectCandidates(item, DISCUSS.timeSelectors, 20);
+        for (var i = 0; i < els.length; i++) {
+            var attr = els[i].getAttribute ? els[i].getAttribute('datetime') : null;
+            if (attr) {
+                var fromAttr = parseTimeToMs(attr);
+                if (fromAttr !== null) return { text: cleanText(els[i].textContent) || attr, ts: fromAttr };
+            }
+            var t = cleanText(els[i].textContent);
             if (!t) continue;
-            out.push({
-                tag: e.tagName,
-                cls: ((typeof e.className === 'string') ? e.className : '').slice(0, 80),
-                text: t.slice(0, 80)
-            });
+            var ts = parseTimeToMs(t);
+            if (ts !== null) return { text: t, ts: ts };
+            if (i === 0) return { text: t, ts: null };
         }
-        return out;
+        return { text: '', ts: null };
     }
 
-    // 选项正文诊断。观察到的现象是 `.optionCnt` 的 textContent 为空、里面只有一个图标 span，
-    // 还挂着 edueditor_styleclass_NN 这类注入式类名。正文到底渲染在哪里（CSS content /
-    // 图片 / 异步加载 / 根本没渲染）决定了“按选项文本映射答案”这条路是否成立。
-    function probeOptionContentDiag() {
-        var out = [];
-        var opts = document.querySelectorAll('.optionCnt, .choices > li, .u-questionItem li');
-        for (var i = 0; i < opts.length && out.length < 8; i++) {
-            var el = opts[i];
-            var d = {
-                tag: el.tagName,
-                cls: ((typeof el.className === 'string') ? el.className : '').slice(0, 140),
-                textContent: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120),
-                innerHTML: (el.innerHTML || '').replace(/\s+/g, ' ').slice(0, 400),
-                childTags: [],
-                imgSrcs: []
-            };
-            for (var c = 0; c < el.children.length && c < 8; c++) {
-                var k = el.children[c];
-                var kcls = (typeof k.className === 'string') ? k.className : '';
-                d.childTags.push(k.tagName + '.' + kcls.slice(0, 60));
+    // 正文节点判定：作者名 / 时间 / 点赞条这些元信息不是正文，
+    // 误取它们会把「张三 2026-10-11 12」当回复发出去。
+    function looksLikeMeta(el) {
+        var cls = (typeof el.className === 'string') ? el.className : '';
+        if (DISCUSS.metaClass.test(cls)) return true;
+        return !!(el.closest && el.closest('time, [class*="time"], [class*="like"], [class*="praise"]'));
+    }
+
+    function pickContent(el) {
+        var cands = collectCandidates(el, DISCUSS.contentSelectors, 40);
+        var viable = [], i;
+        for (i = 0; i < cands.length; i++) {
+            var t = cleanText(cands[i].textContent);
+            if (t.length < CONFIG.DISCUSS_MIN_LEN || t.length > 1500) continue;
+            if (isPlaceholderText(t)) continue;
+            viable.push(cands[i]);
+        }
+        var pool = [];
+        for (i = 0; i < viable.length; i++) {
+            if (!looksLikeMeta(viable[i])) pool.push(viable[i]);
+        }
+        if (pool.length === 0) pool = viable;
+
+        if (pool.length === 0) {
+            // 没有正文型子节点时退到整层文本，但只在长度合理时接受
+            var self = cleanText(el.textContent);
+            if (self.length >= CONFIG.DISCUSS_MIN_LEN && self.length <= 1500 && !isPlaceholderText(self)) {
+                return { text: self, viaContent: false };
             }
-            var imgs = el.querySelectorAll('img');
-            for (var m = 0; m < imgs.length && m < 5; m++) d.imgSrcs.push(String(imgs[m].src || '').slice(0, 200));
-            try {
-                var cs = getComputedStyle(el);
-                d.backgroundImage = String(cs.backgroundImage || '').slice(0, 200);
-                d.beforeContent = String(getComputedStyle(el, '::before').content || '');
-                d.afterContent = String(getComputedStyle(el, '::after').content || '');
-            } catch (e) { /* ignore */ }
-            out.push(d);
+            return null;
         }
-        return out;
-    }
-
-    // 在样式表里找注入式类名（如 edueditor_styleclass_13）对应的规则，
-    // 确认选项正文是不是被写进 CSS 的 content 属性里
-    function probeStyleRules(nameFragment) {
-        var out = [], sheets = document.styleSheets;
-        for (var i = 0; i < sheets.length && out.length < 15; i++) {
-            var rules;
-            try { rules = sheets[i].cssRules; } catch (e) { continue; } // 跨域样式表读 cssRules 会抛
-            if (!rules) continue;
-            for (var j = 0; j < rules.length && out.length < 15; j++) {
-                var r = rules[j];
-                if ((r.selectorText || '').indexOf(nameFragment) === -1) continue;
-                out.push({ selector: r.selectorText.slice(0, 160), css: String(r.cssText || '').slice(0, 400) });
-            }
+        // 取最长的：同一层里可能有摘要、折叠态之类的短副本
+        var best = pool[0], bestLen = cleanText(pool[0].textContent).length;
+        for (i = 1; i < pool.length; i++) {
+            var len = cleanText(pool[i].textContent).length;
+            if (len > bestLen) { best = pool[i]; bestLen = len; }
         }
-        return out;
+        return { text: cleanText(best.textContent), viaContent: true };
     }
 
-    // 把容器文本里“选项区/分析区”整块剪掉，剩下的就是题干。
-    // 这同时是正式解析器要用的算法，放在探针里先验证。
-    function extractStemGuess(item) {
-        var clone = item.cloneNode(true);
-        var cut = clone.querySelectorAll('ul.choices, .j-choicebox, .analysis, .u-answerbox, .u-icon-correct, .u-icon-wrong, script, style');
-        for (var i = 0; i < cut.length; i++) {
-            if (cut[i].parentNode) cut[i].parentNode.removeChild(cut[i]);
-        }
-        var s = (clone.textContent || '').replace(/\s+/g, ' ').trim();
-        // 站点把「得分/总分」当作独立文本节点直接放在题块里，它不是题干的一部分。
-        // 不去掉的话题干会变成「…关系？得分/总分」，只能靠模糊匹配侥幸兜住。
-        s = s.replace(/得分\s*\/\s*总分/g, ' ').replace(/\s+/g, ' ').trim();
-        // 开头的题号也去掉——演练报告里本来就会编号
-        s = s.replace(/^\d{1,3}\s+/, '');
-        return s.slice(0, 300);
-    }
-
-    // 逐选项全量 dump。目的：搞清为什么 4 选项题的 .optionCnt 有文字，
-    // 而 2 选项判断题的 .optionCnt 只有图标、没有文字。
-    function probeAllOptions() {
-        var out = [];
-        var items = document.querySelectorAll('.u-questionItem');
-        for (var q = 0; q < items.length && q < 6; q++) {
-            var item = items[q];
-            var cls = String(item.className || '');
-            var rec = {
-                qIndex: q,
-                cls: cls.slice(0, 150),
-                mode: /examMode/.test(cls) ? 'examMode'
-                    : /analysisMode/.test(cls) ? 'analysisMode' : 'normal',
-                stemGuess: extractStemGuess(item),
-                containerText: (item.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 220),
-                options: []
-            };
-            var lis = item.querySelectorAll('ul.choices > li');
-            for (var L = 0; L < lis.length && L < 10; L++) {
-                var li = lis[L];
-                var cnt = li.querySelector('.optionCnt');
-                var pos = li.querySelector('.optionPos');
-                var inp = li.querySelector('input');
-                var o = {
-                    idx: L,
-                    pos: pos ? (pos.textContent || '').trim() : '',
-                    checked: inp ? !!inp.checked : null,
-                    inputType: inp ? inp.type : '',
-                    disabled: inp ? !!inp.disabled : null,
-                    correctIcon: !!li.querySelector('.u-icon-correct'),
-                    wrongIcon: !!li.querySelector('.u-icon-wrong'),
-                    cntText: cnt ? (cnt.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 110) : null,
-                    cntHtml: cnt ? cnt.innerHTML.replace(/\s+/g, ' ').slice(0, 260) : null,
-                    imgCount: cnt ? cnt.querySelectorAll('img').length : 0
-                };
-                if (cnt) {
-                    try {
-                        o.cntBefore = String(getComputedStyle(cnt, '::before').content || '');
-                        o.cntAfter = String(getComputedStyle(cnt, '::after').content || '');
-                    } catch (e) { o.cntBefore = o.cntAfter = '?'; }
-                }
-                rec.options.push(o);
-            }
-            out.push(rec);
-        }
-        return out;
-    }
-
-    function probeQuestions(limit) {
-        var out = [];
-        var inputs = document.querySelectorAll('input[type="radio"], input[type="checkbox"], textarea');
-        var seen = [];
-        for (var i = 0; i < inputs.length && out.length < limit; i++) {
-            var el = inputs[i];
-            var ladder = ancestorLadder(el, 8);
-            // 同一道题的多个选项会爬到同一条祖先链，用「第 3 层祖先」去重
-            var marker = ladder.length > 3 ? (ladder[3].tag + '|' + ladder[3].cls + '|' + ladder[3].textHead) : String(i);
-            if (seen.indexOf(marker) !== -1) continue;
-            seen.push(marker);
-            var container = el;
-            for (var up = 0; up < 3 && container && container.parentElement; up++) container = container.parentElement;
-            out.push({
-                index: out.length,
-                triggerInput: {
-                    type: el.type || el.tagName,
-                    name: el.name || '',
-                    id: el.id || ''
-                },
-                ladder: ladder,
-                containerHtml: container ? container.innerHTML.replace(/\s+/g, ' ').slice(0, 600) : '',
-                containerInputs: container ? probeInputs(container) : [],
-                containerLabels: container ? probeOptionLabels(container) : []
-            });
-        }
-        return out;
-    }
-
-    function probeButtons() {
-        var out = [];
-        var els = document.querySelectorAll('button, a, div[role="button"], input[type="submit"]');
-        for (var i = 0; i < els.length && out.length < 40; i++) {
-            var e = els[i];
-            if (!isVisible(e)) continue;
-            var t = (e.textContent || '').replace(/\s+/g, ' ').trim();
-            if (!t || t.length > 24) continue;
-            if (!/提交|交卷|保存|下一|上一|翻页|确定|取消|返回|重做|继续|查看答案|答案解析/.test(t)) continue;
-            out.push({
-                tag: e.tagName,
-                cls: ((typeof e.className === 'string') ? e.className : '').slice(0, 80),
-                id: e.id || '',
-                text: t,
-                disabled: !!e.disabled
-            });
-        }
-        return out;
-    }
-
-    function probeAttempts() {
-        var txt = (document.body ? (document.body.textContent || '') : '').replace(/\s+/g, ' ');
-        var out = [];
-        // 只在关键词邻域内截取，并限长，否则会捞回一大段题目正文
-        var re = /(剩余|可尝试|作答次数|考试次数|剩余次数|已提交|已作答|重做|重新作答|机会)[^。；\n]{0,24}/g;
-        var m;
-        while ((m = re.exec(txt)) !== null && out.length < 20) {
-            var s = m[0].trim();
-            if (s.length > 40) continue;
-            if (out.indexOf(s) === -1) out.push(s);
-        }
-        return out;
-    }
-
-    // 站点自带的「智能助教」浮层里也有“题目解析”字样，会淹没真正的答案区，要排除掉
-    function isAssistantNode(el) {
-        return !!(el.closest && el.closest(
-            '#globalAIAssistantBtn, [data-code="assistantChat"], [id="userQuery"], [id="assistantAnswer"]'
-        ));
-    }
-
-    function probeRevealRegion() {
-        var hints = ['正确答案', '参考答案', '你的答案', '答案解析'];
-        var out = [];
-        var all = document.querySelectorAll('div, section, li, p, span');
-        for (var i = 0; i < all.length && out.length < 8; i++) {
-            var e = all[i];
-            if (isAssistantNode(e)) continue;
-            var t = (e.textContent || '').replace(/\s+/g, ' ').trim();
-            for (var h = 0; h < hints.length; h++) {
-                if (t.indexOf(hints[h]) !== -1 && t.length < 300) {
-                    out.push({
-                        hint: hints[h],
-                        tag: e.tagName,
-                        cls: ((typeof e.className === 'string') ? e.className : '').slice(0, 80),
-                        text: t.slice(0, 200),
-                        html: e.innerHTML.replace(/\s+/g, ' ').slice(0, 400)
-                    });
-                    break;
-                }
-            }
-        }
-        return out;
-    }
-
-    function probeWindowGlobals() {
-        var hits = [], keys;
-        try { keys = Object.keys(window); } catch (e) { return hits; }
-        var re = /answer|quiz|exam|question|paper|init|__|course/i;
-        for (var i = 0; i < keys.length && hits.length < 50; i++) {
-            var k = keys[i];
-            if (!re.test(k)) continue;
-            var t, sample;
-            try {
-                var v = window[k];
-                t = (v === null) ? 'null' : (typeof v);
-                if (typeof v === 'string') sample = v.slice(0, 100);
-                else if (v && t === 'object') sample = describeShape(v, 0, 2);
-                else sample = '';
-            } catch (e) { t = '(读取失败)'; sample = ''; }
-            hits.push({ key: k, type: t, sample: String(sample).slice(0, 200) });
-        }
-        return hits;
-    }
-
-    function getCspMeta() {
-        var m = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
-        return m ? (m.getAttribute('content') || '') : '(页面无 CSP meta)';
-    }
-
-    function collectQuizProbe() {
+    // 单条楼层 → 结构化记录。strict 时要求必须命中正文节点（整页兜底模式用，
+    // 否则满屏的 li 都会被当成回复）
+    function parseReplyItem(el, index, strict) {
+        var content = pickContent(el);
+        if (!content) return null;
+        if (strict && !content.viaContent) return null;
+        var time = readTimeInfo(el);
         return {
-            probedAt: new Date().toISOString(),
-            href: location.href,
-            hash: location.hash,
-            pageType: detectPageType(),
-            cspMeta: getCspMeta(),
-            selectorHits: probeSelectors(),
-            questions: probeQuestions(3),
-            optionContentDiag: probeOptionContentDiag(),
-            styleClassRules: probeStyleRules('edueditor_styleclass'),
-            allOptions: probeAllOptions(),
-            buttons: probeButtons(),
-            attemptTexts: probeAttempts(),
-            revealRegions: probeRevealRegion(),
-            windowGlobals: probeWindowGlobals(),
-            network: netLog.slice(),
-            networkProbeInstalled: netProbeInstalled,
-            note: netProbeInstalled
-                ? '网络探针已安装。请在本页翻页 / 点一个选项 / 交卷，然后再点一次「答题探针」取回网络记录。'
-                : '网络探针尚未安装，点一次「答题探针」即可安装。'
+            el: el,
+            index: index,
+            text: content.text,
+            likes: readLikeCount(el),
+            timeText: time.text,
+            ts: time.ts,
+            viaContent: content.viaContent,
         };
     }
 
-    // 通用文本浮层：探针报告、自检明细、题库导入共用。
+    function parseReplyItems() {
+        var lists = collectCandidates(document, DISCUSS.listSelectors, 40);
+        var i, items;
+        for (i = 0; i < lists.length; i++) {
+            var raw = keepOutermost(collectCandidates(lists[i], DISCUSS.itemSelectors, CONFIG.DISCUSS_MAX_ITEMS));
+            items = [];
+            for (var j = 0; j < raw.length; j++) {
+                var it = parseReplyItem(raw[j], items.length, false);
+                if (it) items.push(it);
+            }
+            if (items.length > 0) {
+                console.log('[MOOC讨论] 命中容器 ' + lists[i].className + '，解析到 ' + items.length + ' 条答复');
+                return { items: items, listEl: lists[i], viaList: true };
+            }
+        }
+        // 容器全没命中：整页兜底，此时必须命中正文节点才算数
+        var fallback = keepOutermost(collectCandidates(document, DISCUSS.itemSelectors, CONFIG.DISCUSS_MAX_ITEMS));
+        items = [];
+        for (i = 0; i < fallback.length; i++) {
+            var f = parseReplyItem(fallback[i], items.length, true);
+            if (f) items.push(f);
+        }
+        if (items.length > 0) {
+            console.log('[MOOC讨论] 未命中已知容器，整页兜底解析到 ' + items.length + ' 条答复');
+        }
+        // 最后一招：按“点赞/投票元素”反查楼层。新版 UI 若改了楼层类名，
+        // 只要点赞图标还在，就能兜住大部分版式。
+        if (items.length === 0) {
+            var votes = document.querySelectorAll('[class*="vote"], [class*="like"], [class*="zan"], [class*="praise"], [class*="thumb"], .j-icon-up');
+            var seenFloor = [];
+            for (i = 0; i < votes.length && items.length < CONFIG.DISCUSS_MAX_ITEMS; i++) {
+                if (!isVisible(votes[i])) continue;
+                var floor = votes[i].closest
+                    ? votes[i].closest('[class*="reply"], [class*="comment"], [class*="post"], [class*="discuss"], [class*="floor"], li, .item')
+                    : null;
+                if (!floor || seenFloor.indexOf(floor) !== -1) continue;
+                var it = parseReplyItem(floor, items.length, true);
+                if (it) { seenFloor.push(floor); items.push(it); }
+            }
+            if (items.length > 0) {
+                console.log('[MOOC讨论] 点赞元素反查楼层，解析到 ' + items.length + ' 条答复');
+            }
+        }
+        return { items: items, listEl: null, viaList: false };
+    }
+
+    // 按来源挑一条。返回 note 说明是怎么挑的，方便人对着预览判断靠不靠谱。
+    function pickSourceReply(items, source) {
+        if (!items || items.length === 0) return null;
+
+        function byNewest(a, b) {
+            var ta = a.ts === null ? -Infinity : a.ts;
+            var tb = b.ts === null ? -Infinity : b.ts;
+            if (ta !== tb) return tb - ta;
+            return b.index - a.index;
+        }
+
+        if (source === DISCUSS.SOURCE_LIKED) {
+            var liked = items.filter(function (it) { return it.likes !== null && it.likes > 0; });
+            if (liked.length === 0) {
+                var fb = items.slice().sort(byNewest)[0];
+                return {
+                    item: fb,
+                    note: '本页没解析到点赞数，已退回「最新答复」'
+                };
+            }
+            liked.sort(function (a, b) {
+                if (b.likes !== a.likes) return b.likes - a.likes;
+                return byNewest(a, b);
+            });
+            return { item: liked[0], note: '取自点赞最多的答复（' + liked[0].likes + ' 个赞）' };
+        }
+
+        var sorted = items.slice().sort(byNewest);
+        var anyTs = sorted.some(function (it) { return it.ts !== null; });
+        return {
+            item: sorted[0],
+            note: anyTs ? '取自时间最新的答复' : '没能解析出楼层时间，按页面顺序取最后一条'
+        };
+    }
+
+    // 超长就截到句子边界——整段照搬既显眼，又容易撞上站点字数上限
+    function clipReplyText(s) {
+        var t = cleanText(s);
+        var max = CONFIG.DISCUSS_MAX_LEN;
+        if (t.length <= max) return t;
+        var cut = t.slice(0, max);
+        var idx = -1, marks = ['。', '！', '？', '；', '. ', '! ', '? '];
+        for (var i = 0; i < marks.length; i++) {
+            var p = cut.lastIndexOf(marks[i]);
+            if (p > idx) idx = p;
+        }
+        if (idx > max * 0.4) cut = cut.slice(0, idx + 1);
+        return cut;
+    }
+
+    // ===================== 课堂讨论：编辑器与发布 =====================
+    function isEditable(el) {
+        if (!el || !isVisible(el)) return false;
+        if (el.disabled || el.readOnly) return false;
+        var tag = String(el.tagName || '').toUpperCase();
+        if (tag === 'TEXTAREA') return true;
+        if (tag === 'INPUT') return String(el.type || '').toLowerCase() === 'text';
+        var ce = el.getAttribute ? el.getAttribute('contenteditable') : null;
+        return ce !== null && ce !== 'false';
+    }
+
+    // 「空的」= 没内容，或只有占位提示。点开编辑区后站点常把提示写进 DOM，
+    // 不识别就会以为已经有人写过而跳过。
+    function isEmptyEditor(el) {
+        var tag = String(el.tagName || '').toUpperCase();
+        var v = (tag === 'TEXTAREA' || tag === 'INPUT') ? (el.value || '') : (el.textContent || '');
+        v = cleanText(v);
+        if (!v) return true;
+        return isPlaceholderText(v);
+    }
+
+    function findEditorsIn(scope) {
+        var out = [];
+        var els = scope.querySelectorAll('textarea, input[type="text"], [contenteditable]');
+        for (var i = 0; i < els.length; i++) {
+            if (isEditable(els[i]) && isEmptyEditor(els[i])) out.push(els[i]);
+        }
+        return out;
+    }
+
+    // 先在「回复区」作用域里找，找不到再看整页。
+    // 顺序很重要：页面上可能有搜索框、笔记框等其它可编辑区，
+    // 直接全页扫第一个输入框会写错地方。
+    function findReplyEditor() {
+        var scopes = collectCandidates(document, DISCUSS.editorScopeSelectors, 40);
+        var i, found;
+        for (i = 0; i < scopes.length; i++) {
+            found = findEditorsIn(scopes[i]);
+            if (found.length > 0) return found[0];
+        }
+        found = findEditorsIn(document);
+        return found.length > 0 ? found[0] : null;
+    }
+
+    function fillEditor(el, value) {
+        var tag = String(el.tagName || '').toUpperCase();
+        if (tag === 'TEXTAREA' || tag === 'INPUT') {
+            setNativeValue(el, value);
+            return (el.value || '').indexOf(value) !== -1;
+        }
+        el.focus();
+        // 先全选，再走浏览器原生的 insertText 路径：直接改 textContent
+        // 常常被富文本框架忽略，点发布时它读到的还是旧值
+        var sel = window.getSelection();
+        if (sel) {
+            var range = document.createRange();
+            range.selectNodeContents(el);
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }
+        var ok = false;
+        try { ok = document.execCommand('insertText', false, value); } catch (e) { ok = false; }
+        if (!ok || cleanText(el.textContent).indexOf(cleanText(value)) === -1) {
+            el.textContent = value;
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        return cleanText(el.textContent).length > 0;
+    }
+
+    // 发布按钮。从编辑器往上爬若干层先找（发布按钮多半和输入框同属一个表单），
+    // 全页兜底时跳过「落在某个楼层里」的按钮——那通常是楼层自己的「回复」小链接。
+    function findSubmitButton(editor, items) {
+        var scope = editor, up = 0;
+        while (scope && up < 6) {
+            var btn = findButtonIn(scope);
+            if (btn) return btn;
+            scope = scope.parentElement;
+            up++;
+        }
+        var all = document.querySelectorAll('button, a, div[role="button"], input[type="submit"], span[role="button"]');
+        for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            if (!isVisible(el) || el.disabled) continue;
+            var t = cleanText(el.textContent || el.value || '');
+            if (!t || t.length > 6) continue;
+            if (!DISCUSS.submitText.test(t)) continue;
+            if (insideAnyItem(el, items)) continue;
+            return el;
+        }
+        return null;
+    }
+
+    function findButtonIn(scope) {
+        if (!scope || !scope.querySelectorAll) return null;
+        var els = scope.querySelectorAll('button, a, div[role="button"], input[type="submit"], span[role="button"]');
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (!isVisible(el) || el.disabled) continue;
+            var t = cleanText(el.textContent || el.value || '');
+            if (!t || t.length > 6) continue;
+            if (DISCUSS.submitText.test(t)) return el;
+        }
+        return null;
+    }
+
+    function insideAnyItem(el, items) {
+        if (!items) return false;
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].el && items[i].el.contains(el)) return true;
+        }
+        return false;
+    }
+
+    // ===================== 课堂讨论：去重留痕 =====================
+    function discussionKey() {
+        var t = '';
+        var h = document.querySelector('h1, [class*="topic-title"], [class*="discuss-title"], [class*="detail-title"], [class*="title"]');
+        if (h) t = cleanText(h.textContent).slice(0, 80);
+        if (!t) t = cleanText(document.title).slice(0, 80);
+        return t + '|' + location.href;
+    }
+
+    function getDiscussHistory() {
+        var h = readStore(DISCUSS.KEY_HISTORY, []);
+        return (h instanceof Array) ? h : [];
+    }
+
+    function alreadyReplied(key) {
+        var h = getDiscussHistory();
+        for (var i = 0; i < h.length; i++) {
+            if (h[i] && h[i].key === key) return h[i].at;
+        }
+        return null;
+    }
+
+    function rememberReplied(key, text) {
+        var h = getDiscussHistory();
+        h.unshift({ key: key, at: Date.now(), text: String(text || '').slice(0, 60) });
+        if (h.length > CONFIG.DISCUSS_HISTORY_MAX) h = h.slice(0, CONFIG.DISCUSS_HISTORY_MAX);
+        writeStore(DISCUSS.KEY_HISTORY, h);
+    }
+
+    function clearDiscussHistory() {
+        writeStore(DISCUSS.KEY_HISTORY, []);
+        updateStatus('🧹 已清除回复记录，同一条讨论可以再次回复');
+    }
+
+    // ===================== 课堂讨论：主流程 =====================
+    // 只做「挑内容」这一件事，回复和预览都复用它
+    function resolveReplyContent() {
+        var parsed = parseReplyItems();
+        if (parsed.items.length === 0) {
+            return { ok: false, error: '未解析到已回复的内容，请确认当前页面是课堂讨论页且已有人回复' };
+        }
+        var source = getDiscussSource();
+        var picked = pickSourceReply(parsed.items, source);
+        if (!picked || !picked.item) {
+            return { ok: false, error: '已回复区域里没有可用的正文' };
+        }
+        return {
+            ok: true,
+            items: parsed.items,
+            item: picked.item,
+            note: picked.note,
+            source: source,
+            viaList: parsed.viaList,
+            text: clipReplyText(picked.item.text),
+        };
+    }
+
+    function previewReply() {
+        var r = resolveReplyContent();
+        if (!r.ok) { updateStatus('❌ ' + r.error); return; }
+        var lines = [];
+        lines.push('内容来源：' + sourceLabel(r.source) + '（' + r.note + '）');
+        lines.push('楼层总数：' + r.items.length + ' 条'
+            + (r.viaList ? '' : '   ⚠️ 未命中已知的回复列表容器，为整页兜底解析结果'));
+        lines.push('选中楼层：第 ' + (r.item.index + 1) + ' 条'
+            + (r.item.likes !== null ? '，点赞 ' + r.item.likes : '，点赞数未解析到')
+            + (r.item.timeText ? '，时间 ' + r.item.timeText : ''));
+        lines.push('');
+        lines.push('=== 将要回复的内容 ===');
+        lines.push(r.text);
+        showTextOverlay('回复预览 · 尚未发布', lines.join('\n'));
+        updateStatus('🔎 已预览：' + sourceLabel(r.source) + '，共 ' + r.items.length + ' 条答复可选');
+    }
+
+    async function replyDiscussion() {
+        var r = resolveReplyContent();
+        if (!r.ok) { updateStatus('❌ ' + r.error); return; }
+
+        var key = discussionKey();
+        var at = alreadyReplied(key);
+        if (at) {
+            updateStatus('⏭ 这条讨论已于 ' + new Date(at).toLocaleString() + ' 回复过，跳过（可在设置里清除记录）');
+            return;
+        }
+
+        updateStatus('正在定位回复输入框...');
+        // 很多站点的输入框要先点一下才会展开真正的编辑区和「发布」按钮
+        var probeEditor = findReplyEditor();
+        if (probeEditor) realClick(probeEditor);
+        await sleep(CONFIG.DELAY_AFTER_CLICK);
+
+        var editor = findReplyEditor();
+        if (!editor) { updateStatus('❌ 未找到可用的回复输入框'); return; }
+
+        updateStatus('正在填入内容（' + sourceLabel(r.source) + '）...');
+        var filled = fillEditor(editor, r.text);
+        if (!filled) { updateStatus('❌ 内容填入失败，未发布任何内容'); return; }
+        await sleep(CONFIG.DISCUSS_FILL_WAIT);
+
+        var btn = findSubmitButton(editor, r.items);
+        if (!btn) {
+            updateStatus('⚠️ 内容已填入输入框，但没找到发布按钮，请手动点击发布');
+            return;
+        }
+
+        updateStatus('正在发布回复...');
+        realClick(btn);
+        await sleep(CONFIG.DELAY_AFTER_SUBMIT);
+        await dismissModal();
+
+        rememberReplied(key, r.text);
+        updateStatus('✅ 已回复（' + sourceLabel(r.source) + ' · ' + r.note + '）');
+    }
+
+    // 页面是否像讨论页：用于决定面板默认打开哪个选项卡。
+    // 判定要偏严。这里只看「回复列表容器」和「多行输入框 / 富文本输入框」，
+    // 不把单行 input 算进去——搜索框、筛选框满页都是，算上会几乎永远为真。
+    function hasDiscussion() {
+        if (collectCandidates(document, DISCUSS.listSelectors, 10).length > 0) return true;
+        var els = document.querySelectorAll('textarea, [contenteditable="true"]');
+        for (var i = 0; i < els.length; i++) {
+            if (isVisible(els[i])) return true;
+        }
+        return false;
+    }
+
+    // 通用文本浮层：回复预览、诊断报告共用。
     // 传了 onSave 就多一个「保存」按钮，文本框可编辑；否则是只读查看。
     function showTextOverlay(title, text, onSave) {
         var old = document.getElementById('mar-probe-overlay');
@@ -2300,30 +1506,70 @@
             });
         }
     }
-
-    function showProbeResult(report) {
-        var text = JSON.stringify(report, null, 2);
-        console.log('[MOOC答题探针] 报告对象', report);
-        console.log('[MOOC答题探针] 报告文本\n' + text);
-        showTextOverlay('答题探针结果 · 全选复制后回传', text);
-    }
-
-    async function quizProbe() {
-        installNetworkProbe();
-        updateStatus('🔬 正在采集答题页结构...');
-        await sleep(200);
-        var report = collectQuizProbe();
-        showProbeResult(report);
-        var qn = report.questions.length;
-        updateStatus('🔬 探针完成：识别到 ' + qn + ' 个候选题块、' + report.selectorHits.length + ' 个命中选择器'
-            + (netProbeInstalled ? '。网络探针已装，翻页/点选项后请再点一次探针' : ''));
-    }
-
     // ===================== 状态栏 & 按钮 =====================
     var statusEl = null;
+    // ===================== 开发者调试日志 =====================
+    // 目的：记录「检测到了什么、走到了哪一步、为什么这样决策」，
+    // 便于开发者排查问题（不是给使用者看完成情况）。面板「日志」页签可查看/复制/清空。
+    var debugLogs = [];
+    var DEBUG_LOG_MAX = 500;      // 内存里最多保留多少条，超出丢最旧
+    var DEBUG_LOG_SHOW = 120;     // 面板里最多展示多少条
+
+    // 追加一条调试日志。cat 是分类标签（type/nav/menu/learn/video/doc/quiz/status/err…）
+    function logDebug(cat, msg) {
+        var t = new Date();
+        var ts = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2) + ':' + ('0' + t.getSeconds()).slice(-2) + '.' + ('00' + t.getMilliseconds()).slice(-3);
+        debugLogs.push({ t: ts, cat: cat, msg: String(msg || '') });
+        if (debugLogs.length > DEBUG_LOG_MAX) debugLogs.splice(0, debugLogs.length - DEBUG_LOG_MAX);
+        try { console.log('[MOOC:' + cat + ']', ts, msg); } catch (e) {}
+        refreshLogBox();
+    }
+
+    // 把日志渲染进面板（只在日志页签可见时渲染，避免高频操作拖慢页面）
+    function escHtml(s) {
+        return String(s === null || s === undefined ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function refreshLogBox() {
+        var box = document.getElementById('mar-log-box');
+        if (!box || !box.parentElement.classList.contains('mar-active')) return;
+        var frag = [];
+        var start = Math.max(0, debugLogs.length - DEBUG_LOG_SHOW);
+        for (var i = start; i < debugLogs.length; i++) {
+            var l = debugLogs[i];
+            frag.push('<div class="mar-log-line"><span class="mar-log-t">' + l.t + '</span>[<span class="mar-log-cat">' + l.cat + '</span>] ' + escHtml(l.msg) + '</div>');
+        }
+        box.innerHTML = frag.length ? frag.join('') : '<div class="mar-log-empty">（暂无日志）</div>';
+        try { box.scrollTop = box.scrollHeight; } catch (e) {}
+    }
+
+    function clearDebugLogs() {
+        debugLogs = [];
+        refreshLogBox();
+    }
+
+    // 复制日志到剪贴板（格式：时间 [分类] 消息，每行一条）
+    function copyDebugLogs() {
+        var text = debugLogs.map(function (l) { return l.t + ' [' + l.cat + '] ' + l.msg; }).join('\n');
+        if (!text) { updateStatus('暂无日志可复制'); return; }
+        try {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            updateStatus('✅ 已复制 ' + debugLogs.length + ' 条日志');
+        } catch (e) {
+            showTextOverlay('调试日志', text);
+            updateStatus('已用浮层展示日志（复制失败）');
+        }
+    }
+
     function updateStatus(msg) {
         if (statusEl) statusEl.textContent = msg;
-        console.log('[MOOC互评]', msg);
+        logDebug('status', msg);
     }
 
     // 按选择器收集而不是硬编码 id 列表。原来那份硬编码清单是个持续的坑：
@@ -2333,9 +1579,11 @@
         for (var i = 0; i < btns.length; i++) {
             var el = btns[i];
             if (el.id === 'mar-stop') continue;
-            // 开关类按钮（自动提交 / 解除复制）与任务状态无关，
+            // 开关类按钮（解除复制）与任务状态无关，
             // 任务跑着的时候也应该能随时切换
             if (el.classList.contains('mar-toggle')) continue;
+            // 日志按钮同理：跑着的时候也需要能复制/清空日志排查问题
+            if (el.id === 'mar-log-copy' || el.id === 'mar-log-clear') continue;
             el.disabled = isRunning;
         }
         var stop = document.getElementById('mar-stop');
@@ -2417,14 +1665,6 @@
             '  border-color: rgba(255, 255, 255, 0.75);',
             '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 20, 40, 0.05);',
             '}',
-            // 自动提交开着时，在「答题」选项卡上挂个橙点。
-            // 这是整个脚本里最危险的一个状态，切到别的选项卡也必须在视野里留着。
-            '.mar-tab.mar-alert::before {',
-            '  content: ""; position: absolute; top: 5px; right: 8px;',
-            '  width: 5px; height: 5px; border-radius: 50%;',
-            '  background: #f97316;',
-            '  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95);',
-            '}',
             // 视图：同一时刻只有一个 .mar-pane 是 flex
             '.mar-pane { display: none; flex-direction: column; gap: 7px; }',
             '.mar-pane.mar-active { display: flex; }',
@@ -2453,6 +1693,10 @@
             '#mar-batch::before { background: #34a853; }',
             '#mar-auto::before  { background: #f5a623; }',
             '#mar-fix::before   { background: #8b5cf6; }',
+            '#mar-discuss-preview::before { background: #0ea5e9; }',
+            '#mar-discuss-reply::before   { background: #22c55e; }',
+            '#mar-learn-start::before    { background: #f97316; }',
+            '#mar-learn-probe::before    { background: #14b8a6; }',
             '#mar-stop::before  { background: #e53e3e; }',
             '.mar-btn:hover:not(:disabled) {',
             '  background: rgba(255, 255, 255, 0.72); transform: translateY(-1px);',
@@ -2485,24 +1729,21 @@
             '  min-height: 16px; word-break: break-all;',
             '  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);',
             '}',
-            '#mar-quiz-probe::before { background: #14b8a6; }',
-            '#mar-quiz-selftest::before { background: #0ea5e9; }',
-            '#mar-quiz-import::before { background: #a855f7; }',
-            '#mar-quiz-dryrun::before { background: #06b6d4; }',
-            '#mar-quiz-answer::before { background: #22c55e; }',
-            '#mar-quiz-autosubmit::before { background: #64748b; }',
-            '#mar-quiz-autosubmit.mar-on::before { background: #f97316; }',
-            '#mar-quiz-autosubmit.mar-on:not(:disabled) {',
-            '  color: #9a3412; background: rgba(255, 241, 230, 0.65);',
-            '  border-color: rgba(255, 200, 160, 0.85);',
-            '}',
-            // 未解决的题目在页面上描个红框，让人一眼看到该补哪几道
-            '.mar-uncertain {',
-            '  outline: 2px dashed #ef4444 !important;',
-            '  outline-offset: 3px;',
-            '  border-radius: 4px;',
-            '}',
             '#mar-copy-unlock::before { background: #64748b; }',
+            // 日志框：等宽小字 + 可滚动 + 底部自动跟随
+            '.mar-log-box {',
+            '  height: 150px; overflow-y: auto;',
+            '  padding: 6px 8px; border-radius: 10px;',
+            '  background: rgba(15, 20, 40, 0.92);',
+            '  border: 1px solid rgba(255, 255, 255, 0.18);',
+            '  font-family: Menlo, Consolas, "SF Mono", monospace;',
+            '  font-size: 10.5px; line-height: 1.45;',
+            '  color: #d6dbe6; white-space: pre-wrap; word-break: break-all;',
+            '}',
+            '.mar-log-line { margin: 1px 0; }',
+            '.mar-log-t { color: #8b93a7; margin-right: 4px; }',
+            '.mar-log-cat { color: #7dd3fc; font-weight: 600; }',
+            '.mar-log-empty { color: #8b93a7; padding: 8px 2px; }',
             // 开启态：绿点 + 淡绿底，一眼能看出复制限制现在是解开的
             '#mar-copy-unlock.mar-on::before { background: #22c55e; }',
             '#mar-copy-unlock.mar-on:not(:disabled) {',
@@ -2510,6 +1751,37 @@
             '  border-color: rgba(160, 230, 190, 0.85);',
             '}',
             '#mar-copy-unlock.mar-on:hover:not(:disabled) { background: rgba(214, 250, 226, 0.88); }',
+            // 设置项：一行标题 + 下面一行二选一的分段控件
+            '.mar-field {',
+            '  display: flex; flex-direction: column; gap: 6px;',
+            '  padding: 9px 11px; border-radius: 11px;',
+            '  background: rgba(255, 255, 255, 0.3);',
+            '  border: 1px solid rgba(255, 255, 255, 0.55);',
+            '  box-shadow: inset 0 1px 2px rgba(15, 20, 40, 0.04);',
+            '}',
+            '.mar-label { font-size: 11.5px; font-weight: 600; color: #3a3a3c; }',
+            '.mar-hint { font-size: 10.5px; line-height: 1.45; color: #7a7a80; }',
+            '.mar-seg {',
+            '  display: flex; gap: 3px; padding: 3px;',
+            '  border-radius: 9px;',
+            '  background: rgba(255, 255, 255, 0.3);',
+            '  border: 1px solid rgba(255, 255, 255, 0.6);',
+            '}',
+            '.mar-seg-btn {',
+            '  flex: 1; padding: 6px 4px;',
+            '  border: 1px solid transparent; border-radius: 7px;',
+            '  background: transparent;',
+            '  font-family: inherit; font-size: 11.5px; font-weight: 500;',
+            '  color: #7a7a80; cursor: pointer;',
+            '  transition: color 0.16s ease, background 0.16s ease;',
+            '}',
+            '.mar-seg-btn:hover:not(.mar-active) { color: #1c1c1e; background: rgba(255, 255, 255, 0.4); }',
+            '.mar-seg-btn.mar-active {',
+            '  color: #1c1c1e; font-weight: 600;',
+            '  background: rgba(255, 255, 255, 0.75);',
+            '  border-color: rgba(255, 255, 255, 0.85);',
+            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 20, 40, 0.06);',
+            '}',
             // 探针结果浮层：只读诊断用，全选复制
             '#mar-probe-overlay {',
             '  position: fixed !important;',
@@ -2573,19 +1845,23 @@
         }
     }
 
-    // 自动提交开着时在「答题」选项卡上留个橙点：这个状态切到别的选项卡也看得见
-    function updateTabAlert() {
-        var tab = document.querySelector('#mooc-auto-review-panel .mar-tab[data-tab="quiz"]');
-        if (!tab) return;
-        if (isAutoSubmitOn()) tab.classList.add('mar-alert');
-        else tab.classList.remove('mar-alert');
+    // 把存储里的「内容来源」同步到设置页的高亮，以及讨论页上的那行说明
+    function updateSourceSeg() {
+        var cur = getDiscussSource();
+        var btns = document.querySelectorAll('#mooc-auto-review-panel .mar-seg-btn');
+        for (var i = 0; i < btns.length; i++) {
+            var on = btns[i].getAttribute('data-source') === cur;
+            if (on) btns[i].classList.add('mar-active');
+            else btns[i].classList.remove('mar-active');
+        }
+        var now = document.getElementById('mar-source-now');
+        if (now) now.textContent = sourceLabel(cur);
     }
 
-    // 默认打开哪个选项卡，按页面类型定：答题页给「答题」，其余给「互评」。
+    // 默认打开哪个选项卡，按页面内容定：看着像讨论页就给「讨论」，其余给「互评」。
     // 只在面板创建时判定一次——之后用户手动切到哪就是哪，不跟着 hash 导航乱跳。
     function pickDefaultTab() {
-        var t = detectPageType();
-        if (t === 'quiz' || t === 'exam' || t === 'question') return 'quiz';
+        if (hasDiscussion()) return 'discuss';
         return 'review';
     }
 
@@ -2603,8 +1879,10 @@
             '<div id="mar-main">',
             '  <div id="mar-tabs">',
             '    <button class="mar-tab" data-tab="review">互评</button>',
-            '    <button class="mar-tab" data-tab="quiz">答题</button>',
-            '    <button class="mar-tab" data-tab="general">通用</button>',
+            '    <button class="mar-tab" data-tab="discuss">讨论</button>',
+            '    <button class="mar-tab" data-tab="auto">自动学习</button>',
+            '    <button class="mar-tab" data-tab="log">日志</button>',
+            '    <button class="mar-tab" data-tab="settings">设置</button>',
             '  </div>',
             '  <div id="mar-body">',
             '    <div class="mar-pane" data-pane="review">',
@@ -2613,16 +1891,48 @@
             '      <button id="mar-auto" class="mar-btn">全自动互评（直到完成）</button>',
             '      <button id="mar-fix" class="mar-btn">评分修复（列表检测）</button>',
             '    </div>',
-            '    <div class="mar-pane" data-pane="quiz">',
-            '      <button id="mar-quiz-import" class="mar-btn">导入题库（粘贴 JSON）</button>',
-            '      <button id="mar-quiz-dryrun" class="mar-btn">只读演练（不点击任何选项）</button>',
-            '      <button id="mar-quiz-answer" class="mar-btn">作答当前页（不交卷）</button>',
-            '      <button id="mar-quiz-autosubmit" class="mar-btn mar-toggle">自动提交：关</button>',
-            '      <button id="mar-quiz-probe" class="mar-btn">答题探针（采集页面结构）</button>',
-            '      <button id="mar-quiz-selftest" class="mar-btn">题库自检（离线逻辑测试）</button>',
+            '    <div class="mar-pane" data-pane="discuss">',
+            '      <button id="mar-discuss-preview" class="mar-btn">预览将回复的内容</button>',
+            '      <button id="mar-discuss-reply" class="mar-btn">一键回复当前讨论</button>',
+            '      <div class="mar-field">',
+            '        <span class="mar-label">内容来源：<span id="mar-source-now">最新答复</span></span>',
+            '        <span class="mar-hint">回复正文取自已回复区域（可在「设置」里切换来源）；同一条讨论只回复一次。</span>',
+            '      </div>',
             '    </div>',
-            '    <div class="mar-pane" data-pane="general">',
+            '    <div class="mar-pane" data-pane="auto">',
+            '      <button id="mar-learn-start" class="mar-btn">开始自动学习（当前章）</button>',
+            '      <button id="mar-learn-probe" class="mar-btn">页面 DOM 诊断</button>',
+            '      <div class="mar-field">',
+            '        <span class="mar-label">自动学习说明</span>',
+            '        <span class="mar-hint">从当前章第一个内容开始：视频从头播放→看完进入下一个内容（测验/文档/讨论等，不是下一个视频）；文档每页 1 秒自动翻页；讨论自动回复；视频中弹出的题目自动作答（答对自动继续，答错请手动点击播放）。</span>',
+            '      </div>',
+            '    </div>',
+            '    <div class="mar-pane" data-pane="log">',
+            '      <div style="display:flex;gap:6px;margin-bottom:6px;">',
+            '        <button id="mar-log-copy" class="mar-btn" style="flex:1;">复制日志</button>',
+            '        <button id="mar-log-clear" class="mar-btn" style="flex:1;">清空</button>',
+            '      </div>',
+            '      <div class="mar-field">',
+            '        <span class="mar-hint">开发者调试日志：检测到了什么、跳转决策、异常等。出现问题时切到本页复制日志发作者。</span>',
+            '      </div>',
+            '      <div id="mar-log-box" class="mar-log-box">（暂无日志）</div>',
+            '    </div>',
+            '    <div class="mar-pane" data-pane="settings">',
+            '      <div class="mar-field">',
+            '        <span class="mar-label">讨论内容来源</span>',
+            '        <div class="mar-seg">',
+            '          <button class="mar-seg-btn" data-source="latest">最新答复</button>',
+            '          <button class="mar-seg-btn" data-source="liked">点赞最多</button>',
+            '        </div>',
+            '        <span class="mar-hint">默认「最新答复」。选「点赞最多」时，若页面没显示点赞数会自动退回最新一条。</span>',
+            '      </div>',
+            '      <div class="mar-field">',
+            '        <span class="mar-label">视频倍速：<span id="mar-rate-now">1.0x</span></span>',
+            '        <input id="mar-video-rate" type="range" min="0.5" max="3" step="0.25" value="1" style="width:100%">',
+            '        <span class="mar-hint">自动学习播放视频时使用的倍速（0.5x ~ 3x）。</span>',
+            '      </div>',
             '      <button id="mar-copy-unlock" class="mar-btn mar-toggle">解除复制限制：关</button>',
+            '      <button id="mar-discuss-clear" class="mar-btn">清除回复记录</button>',
             '    </div>',
             '  </div>',
             '  <div id="mar-foot">',
@@ -2683,6 +1993,7 @@
                     if (err && err.__cancelled) {
                         updateStatus('⏹ 已停止当前操作');
                     } else {
+                        logDebug('err', '异常：' + (err && err.message ? err.message : err));
                         console.error('[MOOC互评] 异常', err);
                         updateStatus('发生异常：' + (err && err.message ? err.message : err));
                     }
@@ -2703,40 +2014,1599 @@
         document.getElementById('mar-copy-unlock').addEventListener('click', toggleCopyUnlock);
         updateCopyUnlockButton();
 
-        document.getElementById('mar-quiz-autosubmit').addEventListener('click', toggleAutoSubmit);
-        updateAutoSubmitButton();
+        document.getElementById('mar-discuss-preview').addEventListener('click', function () { guard(previewReply); });
+        document.getElementById('mar-discuss-reply').addEventListener('click', function () { guard(replyDiscussion); });
+        document.getElementById('mar-discuss-clear').addEventListener('click', function () { guard(clearDiscussHistory); });
 
-        document.getElementById('mar-quiz-import').addEventListener('click', function () { guard(importBankPrompt); });
-        document.getElementById('mar-quiz-dryrun').addEventListener('click', function () { guard(runQuizDryRun); });
-        document.getElementById('mar-quiz-answer').addEventListener('click', function () { guard(runQuizAnswer); });
-        document.getElementById('mar-quiz-probe').addEventListener('click', function () { guard(quizProbe); });
-        document.getElementById('mar-quiz-selftest').addEventListener('click', function () {
-            guard(function () {
-                var r = quizSelfTest();
-                var failed = r.lines.filter(function (l) { return l.indexOf('❌') === 0; });
-                // 有失败项时直接把明细摊开，省得再去翻 console
-                if (failed.length) showTextOverlay('题库自检 · ' + r.summary, r.lines.join('\n'));
+        document.getElementById('mar-learn-start').addEventListener('click', function () { guard(learnChapter); });
+        document.getElementById('mar-learn-probe').addEventListener('click', function () { guard(probeDiscussionDom); });
+
+        // 日志页签：复制 / 清空
+        var logCopy = document.getElementById('mar-log-copy');
+        var logClear = document.getElementById('mar-log-clear');
+        if (logCopy) logCopy.addEventListener('click', copyDebugLogs);
+        if (logClear) logClear.addEventListener('click', clearDebugLogs);
+        var logTab = document.querySelector('.mar-tab[data-tab="log"]');
+        if (logTab) logTab.addEventListener('click', function () { setTimeout(refreshLogBox, 30); });
+
+        // 视频倍速滑块：拖动即落盘，视频在播的话立即生效
+        var rateInput = document.getElementById('mar-video-rate');
+        var rateNow = document.getElementById('mar-rate-now');
+        if (rateInput && rateNow) {
+            rateInput.value = loadVideoRate();
+            rateNow.textContent = loadVideoRate().toFixed(2).replace(/\.?0+$/, '') + 'x';
+            rateInput.addEventListener('input', function () {
+                var r = parseFloat(rateInput.value) || 1;
+                saveVideoRate(r);
+                rateNow.textContent = r.toFixed(2).replace(/\.?0+$/, '') + 'x';
+                applyVideoRate(findVideo());
+                updateStatus('视频倍速已设为 ' + r + 'x');
             });
-        });
+        }
+
+        // 内容来源的分段控件：点一下就切换并落盘，下次打开面板还是这个选择
+        var segBtns = panel.querySelectorAll('.mar-seg-btn');
+        for (var sb = 0; sb < segBtns.length; sb++) {
+            (function (btn) {
+                btn.addEventListener('click', function () {
+                    setDiscussSource(btn.getAttribute('data-source'));
+                    updateStatus('讨论内容来源已切换为：' + sourceLabel(getDiscussSource()));
+                });
+            })(segBtns[sb]);
+        }
+        updateSourceSeg();
+
         document.getElementById('mar-stop').addEventListener('click', function () {
             if (!taskState.running) return;
             taskState.cancelled = true;
+            // 新版路径路由跳转会整页刷新，光靠内存里的 cancelled 不够，
+            // 必须同时清掉 localStorage 里的续跑状态，刷新后才会真正停下来
+            learnClearState();
+            setFloatVisible(false);
             updateStatus('⏹ 正在停止...');
         });
 
-        updateTabAlert();
         // 初始收起停止按钮：面板刚出现时没有任务在跑
         setButtonsRunning(false);
     }
 
+    // ===================== 自动学习（新版学习页） =====================
+    // 同时支持新版学习页两种形态：
+    //   旧版 hash 路由：#/learn/content?type=detail&id=xxx
+    //   新版路径路由：/mooc/learn/{课程}/content/{内容ID}?tid=...&chapterId=...
+    // 整章自动学习：
+    //   视频：从头播放；看完后按目录进入下一个内容（测验/文档/讨论等），
+    //         而不是跳到下一个视频；
+    //   文档：自动翻页，每页停留 1 秒（含新版 mooc-docs-reader 缩略图阅读器）；
+    //   讨论：自动回复（复用课堂讨论逻辑）；
+    //   视频中弹出的题目：自动作答（正确与否不保证）——
+    //         答对平台放行、视频自动继续；答错则等待用户手动点击播放后继续；
+    //   独立测验：只停留片刻不自动作答（避免消耗答题次数）。
+    // 目录解析失败时退化为按 id±1 相邻导航，并用章节标题判断边界。
+    // 新版路径路由跳转 = 整页刷新，靠 localStorage 续跑状态跨页续跑。
+
+    // 页面里是否有“可见”的题目块（随堂测验/单元测验/考试页通用）
+    function hasVisibleQuestionBlocks() {
+        var els = document.querySelectorAll(
+            '.u-questionItem, .m-choiceQuestion, .m-subjectiveQuestion, .m-fillblankQuestion, .j-questionItem, ' +
+            '[class*="questionItem"], [class*="question-item"], [class*="choiceQuestion"], [class*="fillblankQuestion"], ' +
+            '[class*="fillblank"], [class*="judgeQuestion"], [class*="objectiveQuestion"], [class*="testItem"]'
+        );
+        for (var i = 0; i < els.length; i++) {
+            if (isVisible(els[i])) return true;
+        }
+        return false;
+    }
+
+    // 从地址栏解析当前内容 ID：
+    //   新版路径路由：/mooc/learn/{课程}/content/{内容ID}?tid=...（Hash 为空）
+    //   旧版 hash 路由：#/learn/content?type=detail&id=123
+    function learnCurrentContentId() {
+        var m = location.pathname.match(/\/content\/(\d+)/);
+        if (m) return parseInt(m[1], 10);
+        m = location.hash.match(/id=(\d+)/);
+        return m ? parseInt(m[1], 10) : null;
+    }
+
+    // 当前课程路径前缀，例如 /mooc/learn/HPU-1474216172
+    // 用来过滤页面里其他课程/广告链接，保证只收集本课程的内容链接
+    function learnCoursePrefix() {
+        var m = location.pathname.match(/^(\/mooc\/learn\/[^/]+)/);
+        return m ? m[1] : null;
+    }
+
+    // 收集章节目录里的内容链接（含 data-id 的节点），按页面顺序返回 [{id, el, href}]
+    // 优先严格模式：只收能归属到某个“章”的链接（chapterTitleOfLink 非空），
+    // 避免页面上的课程卡片/广告链接污染本章内容列表。
+    // 若严格模式一个都收不到（新版侧栏可能没有可解析的章标题节点），
+    // 退回宽松模式：收本课程路径下所有 /content/ 链接。
+    function learnContentLinks() {
+        var strict = collectCatalogLinks(true);
+        if (strict.length > 0) return strict;
+        var loose = collectCatalogLinks(false);
+        return loose;
+    }
+
+    function collectCatalogLinks(requireChapter) {
+        var out = [], seen = {};
+        var coursePrefix = learnCoursePrefix();
+        var sels = [
+            '[class*="catalog"] a, [class*="chapter"] a, [class*="menu"] a, [class*="lesson"] a, [class*="section"] a, [class*="unit"] a, [class*="node"] a, [class*="learnItem"] a, [class*="learn-item"] a',
+            '[class*="catalog"] [data-id], [class*="chapter"] [data-id], [class*="menu"] [data-id], [class*="lesson"] [data-id], [class*="section"] [data-id], [class*="node"] [data-id]',
+            '[class*="catalog"] [data-content-id], [class*="chapter"] [data-content-id], [class*="lesson"] [data-content-id]',
+            // 新版 UI（mooc- 前缀侧栏）
+            '[class*="mooc-catalog"] a, [class*="mooc-lesson"] a, [class*="mooc-chapter"] a, [class*="mooc-sidebar"] a, [class*="mooc-menu"] a, [class*="mooc-nav"] a',
+            '[class*="mooc-catalog"] [data-content-id], [class*="mooc-lesson"] [data-content-id]',
+            // 新版 UI（learn- 前缀侧栏，如 learn-navigation-link）
+            '[class*="learn-navigation"] a, [class*="learn-nav"] a, [class*="learn-catalog"] a, [class*="learn-lesson"] a, [class*="learn-chapter"] a, [class*="learn-section"] a, [class*="learn-unit"] a, [class*="learn-list"] a, [class*="learn-menu"] a',
+            '[class*="learn-navigation"] [data-content-id], [class*="learn-list"] [data-content-id], [class*="learn-lesson"] [data-content-id]',
+            // 旧版 hash 路由
+            'a[href*="#/learn/content"]',
+            'a[href*="#/learn/forum"]',
+        ];
+        if (!requireChapter) {
+            // 宽松模式：本课程路径下所有指向 /content/ 的链接，以及 learn-navigation 锚点
+            sels.push('a[href*="/content/"]');
+            sels.push('a[class*="learn-navigation"], a[class*="learn-nav"], a[href*="/mooc/learn/"]');
+        }
+        for (var s = 0; s < sels.length; s++) {
+            var els;
+            try { els = document.querySelectorAll(sels[s]); } catch (e) { continue; }
+            for (var i = 0; i < els.length; i++) {
+                var srcEl = els[i];
+                var a = (srcEl.tagName === 'A') ? srcEl : srcEl.querySelector('a[href*="id="], a[href*="/content/"]');
+                // 跳过“上一个/下一个/返回”这类导航按钮
+                if (a && /上一个|下一个|上一节|下一节|上一讲|下一讲|上一章|下一章|返回|首页/.test(cleanText((a.textContent || '').slice(0, 6)))) continue;
+                if (a && coursePrefix) {
+                    var ah = a.getAttribute('href') || '';
+                    // 宽松模式下只收本课程的链接；目录容器里的链接不强制（容器本身已限定范围）
+                    if (!requireChapter && ah.indexOf(coursePrefix) !== 0 && ah.indexOf('#') !== 0) continue;
+                }
+                var id = linkIdOf(a || srcEl);
+                if (id === null || seen[id]) continue;
+                // 严格模式必须能归属到章；宽松模式不要求
+                if (requireChapter && !chapterTitleOfLink(a || srcEl)) continue;
+                seen[id] = true;
+                out.push({ id: id, el: a || srcEl, href: a ? (a.getAttribute('href') || '') : '' });
+            }
+        }
+        return out;
+    }
+
+    // 从链接（或带 data 属性的节点）里解析内容 ID，兼容新旧两种 URL 形态
+    function linkIdOf(node) {
+        if (!node) return null;
+        var href = (node.getAttribute && node.getAttribute('href')) || '';
+        var m = href.match(/\/content\/(\d+)/) || href.match(/id=(\d+)/);
+        if (m) return parseInt(m[1], 10);
+        var di = (node.getAttribute && (node.getAttribute('data-content-id') || node.getAttribute('data-id'))) || '';
+        if (di && /^\d+$/.test(di)) return parseInt(di, 10);
+        return null;
+    }
+
+    // 形如「1 总论」「第1章 xxx」「第一章」「第一单元」的才是章标题。
+    // 注意排除节标题（1-1 xxx）和测验条目（单元测验/随堂测验）。
+    function looksLikeChapterHeading(t) {
+        if (!t || t.length < 2 || t.length > 30) return false;
+        if (/章|讲|篇|专题|Module|Chapter|Part/i.test(t)) return true;
+        if (/周/.test(t) && /第\s*[一二三四五六七八九十\d]+\s*周/.test(t)) return true;
+        if (/单元(?!测验|测试|作业|检测|练习)/.test(t)) return true;
+        if (/^\d{1,2}\s*[^\d.、．\-－]/.test(t)) return true; // “1 总论”“2 会计科目”
+        return false;
+    }
+
+    // 某个内容链接所属“章”的标题（从它的祖先链上找章标题节点）
+    function chapterTitleOfLink(link) {
+        var node = link && link.parentElement;
+        var depth = 0;
+        while (node && depth < 10) {
+            var heads = node.querySelectorAll(
+                ':scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6, ' +
+                ':scope > [class*="chapter"], :scope > [class*="catalog-title"], :scope > [class*="catalogTitle"], ' +
+                ':scope > [class*="unit-title"], :scope > [class*="unitTitle"]'
+            );
+            for (var i = 0; i < heads.length; i++) {
+                var t = cleanText(heads[i].textContent);
+                if (looksLikeChapterHeading(t)) return t;
+            }
+            node = node.parentElement;
+            depth++;
+        }
+        return null;
+    }
+
+    // 当前页面的章节标题（标题栏/面包屑 → 目录兜底）
+    function learnChapterTitleText() {
+        var cands = [
+            '.titleBar', '[class*="titleBar"]', '[class*="crumb"]', '[class*="breadcrumb"]',
+            '[class*="chapterTitle"]', '[class*="chapter-title"]', '[class*="learnTitle"]',
+            '[class*="content-title"]', '.m-crumb',
+            // 新版 UI（learn- 前缀）
+            '[class*="learn-title"]', '[class*="learn-chapter"]', '[class*="learn-catalog"]',
+            '[class*="learn-lesson-title"]', '[class*="learn-header-title"]', '[class*="learn-unit"]',
+            '[class*="learn-section-title"]', '[class*="learn-content-title"]',
+        ];
+        for (var c = 0; c < cands.length; c++) {
+            var els;
+            try { els = document.querySelectorAll(cands[c]); } catch (e) { continue; }
+            for (var i = 0; i < els.length; i++) {
+                var t = cleanText(els[i].textContent);
+                if (!t || t.length > 80) continue;
+                var segs = t.split(/[>›»·|—–/]/);
+                for (var k = 0; k < segs.length; k++) {
+                    var seg = cleanText(segs[k]);
+                    if (looksLikeChapterHeading(seg)) return seg;
+                }
+                // 宽松兜底：取第一段
+                var first = cleanText(segs[0]);
+                if (first && first.length >= 2 && first.length <= 30 && !/^\d+$/.test(first)) return first;
+            }
+        }
+        var heads = document.querySelectorAll('[class*="catalog"] h3, [class*="catalog"] h4, [class*="chapter"] h3, [class*="chapter"] h4, [class*="catalog"] [class*="chapter"], [class*="catalog"] [class*="catalog-title"], [class*="catalog"] [class*="catalogTitle"], [class*="learn-navigation"] h3, [class*="learn-navigation"] h4, [class*="learn-list"] [class*="title"], [class*="learn-nav"] [class*="title"]');
+        for (i = 0; i < heads.length; i++) {
+            var t2 = cleanText(heads[i].textContent);
+            if (looksLikeChapterHeading(t2)) return t2;
+        }
+        return null;
+    }
+
+    // 可见的 video 元素
+    function findVideo() {
+        var v = document.querySelector('video');
+        return v && isVisible(v) ? v : null;
+    }
+
+    // 播放器上的“播放/开始”按钮（autoplay 被拦时兜底用真实点击）
+    function findPlayButtons() {
+        var out = [], els = document.querySelectorAll('button, a, [role="button"], span, div');
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (!isVisible(el)) continue;
+            var cls = String(el.className || '');
+            var label = el.getAttribute ? (el.getAttribute('aria-label') || el.getAttribute('title') || '') : '';
+            if (!/\b(play|start)\b/i.test(cls) && !/play|start/i.test(label) && !/播放|开始/.test(cleanText((el.textContent || '').slice(0, 12)))) continue;
+            if (el.clientWidth > 400 || el.clientHeight > 400) continue;
+            out.push(el);
+        }
+        return out;
+    }
+
+    async function playVideo(video) {
+        if (!video) return;
+        applyVideoRate(video);
+        var p = null;
+        try { p = video.play(); } catch (e) { p = null; }
+        if (p && p.catch) p.catch(function () {});
+        // 等 play() 生效：视频仍在暂停就继续等一小段
+        var t0 = Date.now();
+        while (Date.now() - t0 < 2500 && video.paused) { await sleep(200); }
+        if (!video.paused) return;
+        // autoplay 被拦时兜底：真实点击播放器上的播放/开始按钮
+        var btns = findPlayButtons();
+        var clicked = false;
+        for (var i = 0; i < btns.length; i++) { realClick(btns[i]); clicked = true; }
+        if (clicked) await sleep(700);
+    }
+
+    // —— 视频倍速（设置页可调，0.5x ~ 3x，落盘 localStorage）——
+    function loadVideoRate() {
+        try {
+            var r = parseFloat(localStorage.getItem('mar.video.rate'));
+            if (r >= 0.5 && r <= 3) return r;
+        } catch (e) {}
+        return 1;
+    }
+    function saveVideoRate(r) {
+        try { localStorage.setItem('mar.video.rate', String(r)); } catch (e) {}
+    }
+    // 把倍速应用到视频上（部分播放器切清晰度/拖动进度后会重置倍速，需要持续应用）
+    function applyVideoRate(video) {
+        var r = loadVideoRate();
+        try { if (video && Math.abs(video.playbackRate - r) > 0.01) video.playbackRate = r; } catch (e) {}
+    }
+
+    // 视频中弹出的题目浮层。只在有视频时探测；强特征（题干文字）出现时
+    // 即使视频还在播也认，避免漏掉“先弹题后暂停”的情况。
+    function findQuizPopup() {
+        var video = findVideo();
+        if (!video) return null;
+        var sels = [
+            '[class*="dialog"]', '[class*="modal"]', '[class*="popup"]', '[class*="layer"]', '[class*="overlay"]',
+            '[class*="question"]', '[class*="quiz"]', '[class*="Quiz"]', '[class*="testQuestion"]',
+            '[class*="interaction"]', '[class*="ask"]', '[class*="topic"]',
+        ];
+        for (var s = 0; s < sels.length; s++) {
+            var els;
+            try { els = document.querySelectorAll(sels[s]); } catch (e) { continue; }
+            for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                if (!isVisible(el)) continue;
+                if (el.clientWidth < 220 || el.clientHeight < 120) continue;
+                if (el.closest && el.closest('[class*="catalog"], [class*="sidebar"], [class*="menu"]')) continue;
+                var txt = cleanText(el.textContent).slice(0, 400);
+                if (!txt) continue;
+                var strong = /请选择|请回答|请作答|单选题|多选题|判断题|填空题/.test(txt);
+                var markers = strong || /本题|选项|[A-H]\s*[\.、．）)]/.test(txt);
+                if (!markers) continue;
+                if (!video.paused && !strong) continue;
+                var hasOpt = false, hasSub = false, o, b;
+                var opts = el.querySelectorAll('input[type="radio"], input[type="checkbox"], label, [class*="option"], [class*="choice"], [class*="answer"]');
+                for (o = 0; o < opts.length; o++) { if (isVisible(opts[o])) { hasOpt = true; break; } }
+                var subs = el.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"]');
+                for (b = 0; b < subs.length; b++) { if (isVisible(subs[b])) { hasSub = true; break; } }
+                if (!hasOpt && !hasSub) continue;
+                return el;
+            }
+        }
+        return null;
+    }
+
+    // 作答弹题：选第一个选项 → 点提交/继续。对错不保证。
+    async function answerQuizPopup(popup) {
+        var i, clickedOpt = false;
+        var radios = popup.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+        for (i = 0; i < radios.length; i++) {
+            if (isVisible(radios[i]) && !radios[i].disabled) { realClick(radios[i]); clickedOpt = true; break; }
+        }
+        if (!clickedOpt) {
+            var opts = popup.querySelectorAll('label, li, [class*="option"], [class*="choice"], [class*="answer"], [class*="selectItem"]');
+            for (i = 0; i < opts.length; i++) {
+                var el = opts[i];
+                if (!isVisible(el)) continue;
+                var t = cleanText(el.textContent);
+                if (!t || t.length > 120) continue;
+                if (/^(确定|提交|完成|继续|关闭|下一题|保存|我知道了|重试)$/.test(t)) continue;
+                realClick(el); clickedOpt = true; break;
+            }
+        }
+        if (!clickedOpt) updateStatus('⚠️ 题目弹窗里没找到选项，先尝试直接提交');
+        await sleep(500);
+        var btns = popup.querySelectorAll('button, input[type="button"], input[type="submit"], a[role="button"], div[role="button"], span[role="button"]');
+        var SUBMIT = /^(提交|确定|完成|继续|下一题|保存|提交答案|确认|知道了)$/;
+        for (i = 0; i < btns.length; i++) {
+            var el2 = btns[i];
+            if (!isVisible(el2) || el2.disabled) continue;
+            var tt = cleanText(el2.textContent || el2.value || '').slice(0, 6);
+            if (SUBMIT.test(tt)) { realClick(el2); return true; }
+        }
+        return clickedOpt;
+    }
+
+    async function waitForVideo() {
+        var t0 = Date.now();
+        while (Date.now() - t0 < 20000) {
+            if (taskState.cancelled) throw makeCancelError();
+            var v = findVideo();
+            if (v) return v;
+            await sleep(500);
+        }
+        return null;
+    }
+
+    // 视频内容：从头播放 → 处理弹题 → 看完返回 true
+    async function learnVideoItem() {
+        var video = await waitForVideo();
+        if (!video) { logDebug('video', '⚠️ 未检测到播放器，按其它内容处理'); updateStatus('⚠️ 未检测到播放器，按其它内容处理'); return true; }
+        // 监听 ended 事件：视频一播完立刻触发跳转（比轮询更快更可靠）
+        if (!video.__marEndedHook) {
+            video.__marEndedHook = true;
+            video.addEventListener('ended', function () {
+                try { video.__marEndedFlag = true; } catch (e) {}
+            });
+        }
+        try { if (video.currentTime > 0) video.currentTime = 0; } catch (e) {}
+        logDebug('video', '从头播放：时长=' + (video.duration ? video.duration.toFixed(1) : '?') + 's，倍速=' + loadVideoRate() + 'x');
+        updateStatus('▶ 从头播放视频，看完自动进入下一个内容...');
+        await playVideo(video);
+
+        var manualResume = false;
+        var lastAnswerAt = 0;
+        var lastRetry = 0;
+        while (!taskState.cancelled) {
+            video = findVideo() || video;
+            applyVideoRate(video); // 持续应用倍速（切清晰度/拖动进度后平台可能重置）
+
+            // 0) 用户点了【下一节】→ 跳过当前视频
+            if (manualWaitFlag) { logDebug('video', '用户点击【下一节】，跳过当前视频'); updateStatus('⏭ 用户点击【下一节】，跳过当前视频'); return true; }
+
+            // 1) 视频中弹出题目 → 作答
+            var popup = findQuizPopup();
+            if (popup && Date.now() - lastAnswerAt > 2500) {
+                lastAnswerAt = Date.now();
+                updateStatus('📝 视频中弹出题目，自动作答（不保证对错，只为让视频继续）...');
+                logDebug('quiz', '视频中弹出题目，自动作答...');
+                await answerQuizPopup(popup);
+                var t0 = Date.now(), resumed = false;
+                while (Date.now() - t0 < CONFIG.LEARN_QUIZ_RESUME_WAIT) {
+                    await sleep(CONFIG.LEARN_IDLE_POLL);
+                    var vv = findVideo();
+                    if (vv && !vv.paused && vv.currentTime > 0) { resumed = true; break; }
+                }
+                if (resumed) {
+                    logDebug('quiz', '✅ 答对，平台放行，视频自动继续');
+                    updateStatus('✅ 题目已答，平台放行，视频自动继续播放');
+                } else {
+                    logDebug('quiz', '⚠️ 可能答错，视频停止 —— 请手动点播放，脚本持续监控');
+                    updateStatus('⚠️ 答案可能不对，视频已停止 —— 请手动点击播放按钮继续，脚本会继续监控');
+                    manualResume = true;
+                    var v = findVideo();
+                    if (v) {
+                        await new Promise(function (resolve) {
+                            var doneFlag = false;
+                            function fin() { if (doneFlag) return; doneFlag = true; clearInterval(poller); resolve(); }
+                            function check() {
+                                if (taskState.cancelled || manualWaitFlag) { fin(); return; }
+                                var c = findVideo();
+                                if (c && !c.paused) fin();
+                            }
+                            var poller = setInterval(check, 600);
+                            setTimeout(fin, 10 * 60 * 1000);
+                            if (v.addEventListener) v.addEventListener('play', fin, { once: true });
+                        });
+                    }
+                    manualResume = false;
+                    logDebug('video', '已检测到手动播放，继续监控');
+                    updateStatus('▶ 已检测到手动播放，继续监控视频...');
+                }
+                continue;
+            }
+
+            // 2) 看完 → 进入下一个内容（ended 事件触发或时长到边）
+            if (video.__marEndedFlag || video.ended || (video.duration > 0 && video.currentTime >= video.duration - CONFIG.LEARN_VIDEO_END_MARGIN)) {
+                logDebug('video', '🎬 播放完毕（currentTime=' + (video.currentTime || 0).toFixed(1) + '/duration=' + (video.duration || 0).toFixed(1) + '）');
+                updateStatus('🎬 视频播放完毕');
+                return true;
+            }
+
+            // 3) 意外暂停（非弹题、非手动等待）→ 尝试恢复
+            if (video.paused && !manualResume && Date.now() - lastAnswerAt > 2500 && Date.now() - lastRetry > 2500) {
+                lastRetry = Date.now();
+                await playVideo(video);
+            }
+            await sleep(CONFIG.LEARN_IDLE_POLL);
+        }
+        return false;
+    }
+
+    // 文档查看器（新版课件/PDF/PPT；含新版 mooc-docs-reader 阅读器）
+    function findDocViewer() {
+        var sels = [
+            '[class*="mooc-docs-reader"]', '[class*="docs-reader"]', '[class*="mooc-doc"]',
+            '[class*="doc-viewer"]', '[class*="docViewer"]', '[class*="document-viewer"]',
+            '[class*="pptViewer"]', '[class*="ppt-viewer"]', '[class*="pdfViewer"]', '[class*="pdf-viewer"]',
+            '[class*="slideViewer"]', '[class*="slide-viewer"]', '[class*="coursewareViewer"]',
+            '[class*="course-doc"]', '[class*="courseDoc"]', '[class*="docContent"]', '[class*="doc-content"]',
+            '[class*="docPage"]', '[class*="doc-page"]', '[class*="slidePage"]', '[class*="slide-page"]',
+            '[class*="attachmentPage"]', '[class*="attachment-page"]',
+        ];
+        for (var s = 0; s < sels.length; s++) {
+            var els;
+            try { els = document.querySelectorAll(sels[s]); } catch (e) { continue; }
+            for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                if (!isVisible(el)) continue;
+                if (el.clientHeight < 120 || el.clientWidth < 200) continue;
+                if (el.closest && el.closest('[class*="catalog"], [class*="sidebar"], [class*="menu"], [class*="nav"]')) continue;
+                return el;
+            }
+        }
+        // 兜底：主内容区里一张可见的大图（文档页常为整页图片）
+        var imgs = document.querySelectorAll('img');
+        for (i = 0; i < imgs.length; i++) {
+            var im = imgs[i];
+            if (!isVisible(im)) continue;
+            if (im.clientWidth < 200 || im.clientHeight < 150) continue;
+            if (im.closest && im.closest('[class*="catalog"], [class*="avatar"], [class*="header"], [class*="footer"], [class*="qr"]')) continue;
+            return im.closest('div, section') || im;
+        }
+        return null;
+    }
+
+    // 文档的“下一页”按钮（含新版阅读器：点当前激活页缩略图的后一张）
+    function findDocNextBtn() {
+        var scope = findDocViewer() || document;
+        // 新版 mooc-docs-reader：缩略图按钮 1..N，is-active 是当前页
+        var thumbs = scope.querySelectorAll('.mooc-docs-reader__thumbnail, [class*="mooc-docs-reader__thumbnail"]');
+        if (thumbs.length > 0) {
+            for (var t = 0; t < thumbs.length - 1; t++) {
+                if (thumbs[t].classList.contains('is-active')) return thumbs[t + 1];
+            }
+            return null; // 已在最后一页
+        }
+        var els = scope.querySelectorAll(
+            'button, a, span, [role="button"], input[type="button"], input[type="submit"], ' +
+            '[class*="next"], [class*="Next"], [class*="turn"], [class*="arrow"], [class*="Arrow"]'
+        );
+        var NEXT_TEXT = /^(下一页|下一张|后一页|下一|下页|下一个|»|›|>|＞)$/;
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (!isVisible(el) || el.disabled) continue;
+            var label = el.getAttribute ? (el.getAttribute('aria-label') || el.getAttribute('title') || '') : '';
+            var txt = cleanText((el.textContent || '').slice(0, 8));
+            if (NEXT_TEXT.test(txt) || /下一页|下一张/.test(label)) return el;
+            var cls = String(el.className || '');
+            if (/next|Next|turnRight|arrow-right|arrowRight/.test(cls) && el.clientWidth > 0 && el.clientWidth < 200) return el;
+        }
+        return null;
+    }
+
+    // 当前页的页码信息（“3/12”或新版缩略图 is-active 序号）
+    function docPageInfo() {
+        var thumbs = document.querySelectorAll('.mooc-docs-reader__thumbnail, [class*="mooc-docs-reader__thumbnail"]');
+        if (thumbs.length > 0) {
+            var cur = 0;
+            for (var t = 0; t < thumbs.length; t++) {
+                if (thumbs[t].classList.contains('is-active')) { cur = t + 1; break; }
+            }
+            return { cur: cur, total: thumbs.length };
+        }
+        var els = document.querySelectorAll(
+            '[class*="pageNum"], [class*="page-num"], [class*="pageInfo"], [class*="page-info"], ' +
+            '[class*="pager"], [class*="pagination"], [class*="indicator"], .zpgi, .zcnt'
+        );
+        for (var i = 0; i < els.length; i++) {
+            var m = (els[i].textContent || '').match(/(\d+)\s*\/\s*(\d+)/);
+            if (m) return { cur: parseInt(m[1], 10), total: parseInt(m[2], 10) };
+        }
+        return null;
+    }
+
+    // 当前可见文档页的“指纹”（缩略图激活位 / 主图 src / 内容摘要），用于判断翻页是否生效
+    function docPageSignature() {
+        var scope = findDocViewer();
+        if (!scope) return '';
+        var thumbs = scope.querySelectorAll('.mooc-docs-reader__thumbnail, [class*="mooc-docs-reader__thumbnail"]');
+        if (thumbs.length > 0) {
+            var cur = 0;
+            for (var t = 0; t < thumbs.length; t++) {
+                if (thumbs[t].classList.contains('is-active')) { cur = t + 1; break; }
+            }
+            return 'reader:' + cur + '/' + thumbs.length;
+        }
+        var imgs = scope.querySelectorAll('img');
+        for (var i = 0; i < imgs.length; i++) {
+            var im = imgs[i];
+            if (isVisible(im) && im.src && im.clientWidth >= 100) return im.src;
+        }
+        var txt = scope.textContent || '';
+        return String(txt.length) + ':' + txt.slice(-60);
+    }
+
+    // 没有翻页按钮的长文档：每 1 秒滚动一屏，滚不动即到底
+    async function scrollDocFallback() {
+        var viewer = findDocViewer();
+        var sc = (viewer && viewer.scrollHeight > viewer.clientHeight + 40) ? viewer : (document.scrollingElement || document.documentElement);
+        var before = sc.scrollTop;
+        sc.scrollTop += Math.max(300, Math.min(800, window.innerHeight * 0.7));
+        await sleep(CONFIG.LEARN_DOC_PAGE_MS);
+        return sc.scrollTop > before + 10;
+    }
+
+    // 文档内容：自动翻页，每页停留 1 秒
+    async function learnDocItem() {
+        logDebug('doc', '开始自动翻页（每页 1 秒）...');
+        updateStatus('📄 检测到文档，开始自动翻页（每页 1 秒）...');
+        var flips = 0, stale = 0, lastSig = docPageSignature(), lastInfo = docPageInfo();
+        while (!taskState.cancelled && flips < CONFIG.LEARN_MAX_PAGE_FLIPS) {
+            // 用户点了【下一节】→ 跳过当前文档
+            if (manualWaitFlag) { logDebug('doc', '用户点击【下一节】，跳过当前文档'); updateStatus('⏭ 用户点击【下一节】，跳过当前文档'); return true; }
+            var btn = findDocNextBtn();
+            if (!btn) {
+                // 新版缩略图阅读器：没有下一页按钮就说明已在最后一页，直接完成
+                var info = docPageInfo();
+                if (info && info.total > 0) {
+                    logDebug('doc', '翻页结束（已到最后一页 ' + info.cur + '/' + info.total + '）');
+                    updateStatus('📄 文档翻页结束（已到最后一页），进入下一个内容');
+                    return true;
+                }
+                var moved = await scrollDocFallback();
+                if (!moved) { logDebug('doc', '已到文档末尾（无翻页按钮）'); updateStatus('📄 已到文档末尾（无翻页按钮），进入下一个内容'); return true; }
+                continue;
+            }
+            realClick(btn);
+            await sleep(CONFIG.LEARN_DOC_PAGE_MS);
+            flips++;
+            var sig = docPageSignature();
+            var info2 = docPageInfo();
+            var changed = (sig && sig !== lastSig) || (info2 && lastInfo && (info2.cur > lastInfo.cur || info2.total !== lastInfo.total));
+            if (changed) { stale = 0; lastSig = sig || lastSig; lastInfo = info2 || lastInfo; }
+            else {
+                stale++;
+                if (stale >= 3) { logDebug('doc', '翻页结束（连续 ' + stale + ' 页无变化）'); updateStatus('📄 文档翻页结束（已到最后一页），进入下一个内容'); return true; }
+            }
+            if (flips % 10 === 0) updateStatus('📄 文档翻页中... 已翻 ' + flips + ' 页');
+        }
+        logDebug('doc', '文档处理完成（翻 ' + flips + ' 页）');
+        updateStatus('📄 文档处理完成，进入下一个内容');
+        return true;
+    }
+
+    // 独立测验：只停留片刻（不自动作答，避免消耗答题次数）
+    async function learnQuizItem() {
+        updateStatus('📝 检测到独立测验内容：停留片刻，不自动作答（避免消耗答题次数），随后继续');
+        await sleep(CONFIG.LEARN_QUIZ_VISIT_MS);
+        await dismissModal();
+        return true;
+    }
+
+    // 讨论内容：自动回复
+    async function learnDiscussionItem() {
+        updateStatus('💬 检测到讨论内容，自动回复...');
+        await replyDiscussion();
+        await sleep(1000);
+        return true;
+    }
+
+    // 其它（富文本课件等）：停留片刻
+    async function learnOtherItem() {
+        updateStatus('📄 其它类型内容（富文本/网页课件），停留片刻后继续...');
+        await sleep(CONFIG.LEARN_OTHER_VISIT_MS);
+        return true;
+    }
+
+    // 在页面里找目标 ID 对应的目录链接（SPA 真实点击不会整页刷新）
+    function findContentElById(id) {
+        var links = learnContentLinks();
+        for (var i = 0; i < links.length; i++) {
+            if (links[i].id === id && links[i].el) return links[i].el;
+        }
+        return null;
+    }
+
+    // 宽松版：全页面找目标 ID 对应的链接（不要求归属到章），用于跳转兜底。
+    // 安全约束：<a> 的 href 必须真的指向目标 ID（/content/{id} 或 id={id}），
+    //           否则跳过——避免点到课程首页/公告这类杂项链接。
+    function findAnyContentElById(id) {
+        var els = document.querySelectorAll('a[href*="/content/"], a[href*="id="], [data-content-id], [data-id]');
+        var coursePrefix = learnCoursePrefix();
+        for (var i = 0; i < els.length; i++) {
+            if (linkIdOf(els[i]) !== id) continue;
+            if (els[i].tagName === 'A') {
+                var ah = els[i].getAttribute('href') || '';
+                if (!(new RegExp('/content/' + id + '(?![0-9])').test(ah) || ah.indexOf('id=' + id) !== -1)) continue;
+                if (coursePrefix && ah.indexOf('#') !== 0 && ah.indexOf(coursePrefix) !== 0) continue;
+            }
+            return els[i];
+        }
+        return null;
+    }
+
+    // 构造新版路径路由的跳转地址：只替换 content/{id}，保留 tid，
+    // 但清掉 unitId/chapterId——它们必须与新内容匹配，拿不到正确值宁可交给平台自己解析，
+    // 也不能带旧的（否则平台报“unitId 与 lessonId 不匹配”课件不存在）。
+    function buildContentUrl(id) {
+        try {
+            var u = new URL(location.href);
+            u.pathname = u.pathname.replace(/\/content\/\d+/, '/content/' + id);
+            var sp = new URLSearchParams(u.search);
+            var tid = sp.get('tid');
+            sp.delete('unitId'); sp.delete('chapterId'); sp.delete('sm');
+            if (tid) sp.set('tid', tid);
+            u.search = sp.toString();
+            return u.href;
+        } catch (e) {
+            return location.href.replace(/\/content\/\d+/, '/content/' + id);
+        }
+    }
+
+    // 跳转到指定内容。target 可以是 {id, href, el}，也可以是数字 id。
+    // 新版路径路由（/content/{id}?tid=...&unitId=...&chapterId=...）与旧版 hash 路由都支持。
+    // 顺序：① 真实点击目录里的链接（SPA 内部路由，不刷新、参数全对）；
+    //       ② 用目录链接的完整 href 跳转（含正确 unitId/chapterId）；
+    //       ③ 都没有时按当前 URL 换 content id（并清掉可能不匹配的 unitId/chapterId）。
+    // 安全约束：点击/使用某个链接前，必须确认它的 href 真的指向目标 ID，
+    //           否则宁可自己构造 URL，也不点杂项链接（避免跳到 content/3 这种假地址）。
+    async function gotoContent(target) {
+        var id = (typeof target === 'object' && target) ? target.id : target;
+        var href = (typeof target === 'object' && target) ? (target.href || '') : '';
+        var el = (typeof target === 'object' && target && target.el) || findContentElById(id) || findAnyContentElById(id);
+        if (el) {
+            var elHref = (el.getAttribute && el.getAttribute('href')) || '';
+            // 只采纳「href 里明确含目标 ID」的完整链接；其余一律当没有
+            if (elHref && elHref.indexOf('#') !== 0 &&
+                (new RegExp('/content/' + id + '(?![0-9])').test(elHref) || elHref.indexOf('id=' + id) !== -1)) {
+                href = elHref;
+            } else {
+                el = null; // href 与目标 ID 对不上：不点击、不使用
+            }
+        }
+
+        if (el && el.tagName === 'A' && isVisible(el)) {
+            try { realClick(el); } catch (e) {}
+            await sleep(600);
+            if (learnCurrentContentId() === id) { await sleep(400); return; }
+            // 没生效，继续走 URL 跳转兜底
+        }
+
+        var curHref = location.href, curHash = location.hash;
+        var next = null;
+        if (href) {
+            if (href.indexOf('#') !== -1) {
+                var hashPart = href.slice(href.indexOf('#'));
+                if (/id=(\d+)/.test(hashPart)) next = hashPart; // 旧版：沿用目录链接的 hash
+            } else if (/\/content\/\d+/.test(href) || /\/mooc\/learn\//.test(href)) {
+                next = href; // 新版：完整链接（含 tid/unitId/chapterId，参数正确）
+            }
+        }
+        if (!next) {
+            if (/\/content\/\d+/.test(curHref)) {
+                next = buildContentUrl(id); // 保留 tid，清掉可能不匹配的 unitId/chapterId
+            } else if (/id=\d+/.test(curHash)) {
+                next = curHash.replace(/id=\d+/, 'id=' + id); // 旧版 hash 路由
+            }
+        }
+        if (next) {
+            if (next.indexOf('#') === 0) { if (next !== curHash) location.hash = next; }
+            else { if (next !== curHref) location.href = next; }
+        }
+        var t0 = Date.now();
+        while (Date.now() - t0 < CONFIG.LEARN_NAV_WAIT) {
+            if (taskState.cancelled) throw makeCancelError();
+            if (learnCurrentContentId() === id) { await sleep(500); return; }
+            await sleep(250);
+        }
+    }
+
+    // 判定“当前是不是讨论页”要偏严：自动学习里若误判，会把回复文本填进搜索框。
+    // 要求有 hash 特征，或命中了回复列表容器，或编辑器周围带明显的回复/评论字样。
+    function looksLikeDiscussionPage() {
+        if (/forumdetail|forum|discuss|discussion|topic/i.test(location.hash)) return true;
+        if (collectCandidates(document, DISCUSS.listSelectors, 10).length > 0) return true;
+        var els = document.querySelectorAll('textarea, [contenteditable="true"]');
+        for (var i = 0; i < els.length; i++) {
+            if (!isVisible(els[i])) continue;
+            var scope = els[i].closest('[class*="reply"], [class*="comment"], [class*="editor"], [class*="discuss"], [class*="post"], form');
+            if (scope) {
+                var txt = cleanText(scope.textContent).slice(0, 200);
+                if (/回复|评论|发表|发布|讨论/.test(txt)) return true;
+            }
+        }
+        return false;
+    }
+
+    // 当前页面类型：quiz / discussion / video / doc / other
+    function detectContentType() {
+        var href = location.href, hash = location.hash;
+        // 课件加载失败页（unitId 与 lessonId 不匹配等）→ 快速跳过，不停留
+        var bodyHead = cleanText((document.body ? document.body.textContent : '') || '').slice(0, 300);
+        if (/课件不存在|课件加载失败|unitId[\s\S]{0,20}不匹配|lessonId[\s\S]{0,20}不匹配|内容不存在|资源不存在/.test(bodyHead)) { logDebug('type', 'missing：页面显示课件不存在/unitId不匹配类文案'); return 'missing'; }
+        if (PAGE_CONFIG.quizUrl.test(href) || hasVisibleQuestionBlocks()) { logDebug('type', 'quiz：URL 命中测验路由或检测到题目块'); return 'quiz'; }
+        if (looksLikeDiscussionPage()) { logDebug('type', 'discussion：讨论页特征命中'); return 'discussion'; }
+        if (findVideo()) { logDebug('type', 'video：检测到可见 video 元素'); return 'video'; }
+        if (findDocViewer()) { logDebug('type', 'doc：检测到文档查看器'); return 'doc'; }
+        logDebug('type', 'other：未命中视频/文档/讨论/测验特征（富文本/节标题页等）');
+        return 'other';
+    }
+
+    // ---- 自动学习的跨页面续跑状态 ----
+    // 新版 UI 是路径路由：跳转内容 = 整页刷新，页面刷新后脚本重新初始化，
+    // 内存里的循环会断掉。所以把「计划」写进 localStorage，每次刷新后由
+    // resumeLearn() 接着跑；点“停止”或手动切走则清除状态。
+    var LEARN_STATE_KEY = 'mar.learn.state.v2'; // v2：清掉旧版残留的脏计划
+
+    function learnSaveState(st) {
+        try { localStorage.setItem(LEARN_STATE_KEY, JSON.stringify(st)); } catch (e) {}
+    }
+    function learnLoadState() {
+        try {
+            var s = localStorage.getItem(LEARN_STATE_KEY);
+            if (!s) return null;
+            var o = JSON.parse(s);
+            return o && o.running ? o : null;
+        } catch (e) { return null; }
+    }
+    function learnClearState() {
+        try { localStorage.removeItem(LEARN_STATE_KEY); } catch (e) {}
+    }
+
+    // ===================== 新版 DOM 导航核心（tablist + 章节/小节下拉） =====================
+    // 页面结构（用户提供）：
+    //   · 顶部导航：章节/小节下拉按钮 <button aria-expanded="false" aria-label="章节名/小节名" type="button">
+    //   · 内容标签栏：<div role="tablist"> 内多个 <button role="tab" aria-label="内容名" type="button">，
+    //     当前激活的带 aria-selected="true"
+    //   · SPA 单页应用：跳转一律用 .click() 模拟点击，绝不直接改 URL
+    // 跳转优先级：①同小节（tab 下一个兄弟）→ ②跨小节（小节下拉下一项）→ ③跨章节（章节下拉下一章）
+
+    // 通用：等待元素出现（Promise），超时返回 null；中途取消也返回 null
+    function waitForElement(selector, timeout, root) {
+        return new Promise(function (resolve) {
+            var t0 = Date.now();
+            (function check() {
+                if (taskState.cancelled) { resolve(null); return; }
+                var el;
+                try { el = (root || document).querySelector(selector); } catch (e) { el = null; }
+                if (el && isVisible(el)) { resolve(el); return; }
+                if (Date.now() - t0 >= timeout) { resolve(null); return; }
+                setTimeout(check, 200);
+            })();
+        });
+    }
+
+    // 等待某个内容标签成为激活项（aria-selected=true）
+    async function waitForTabActive(tab) {
+        var t0 = Date.now();
+        while (Date.now() - t0 < CONFIG.LEARN_NAV_WAIT) {
+            if (taskState.cancelled) return false;
+            if (tab && tab.getAttribute('aria-selected') === 'true') return true;
+            await sleep(200);
+        }
+        return !!(tab && tab.getAttribute('aria-selected') === 'true');
+    }
+
+    // 当前激活的内容标签（[role="tab"][aria-selected="true"] 中可见的那个）
+    function currentContentTab() {
+        var tabs = document.querySelectorAll('[role="tab"][aria-selected="true"]');
+        for (var i = 0; i < tabs.length; i++) if (isVisible(tabs[i])) return tabs[i];
+        return null;
+    }
+
+    // 收集全部可见的内容标签
+    function contentTabs() {
+        var out = [];
+        var lists = document.querySelectorAll('[role="tablist"]');
+        for (var l = 0; l < lists.length; l++) {
+            var ts = lists[l].querySelectorAll('[role="tab"]');
+            for (var i = 0; i < ts.length; i++) if (isVisible(ts[i])) out.push(ts[i]);
+        }
+        return out;
+    }
+
+    // 顶部导航里的章节/小节下拉按钮。
+    // 真实页面（用户提供）：
+    //   · 章节按钮 aria-label="第四章 坚持以人民为中心"（匹配章标题）
+    //   · 小节按钮 aria-label="4.2.2 依靠人民创造历史伟业"（数字编号 + 名字）
+    //   · 干扰按钮：两个无 label 的 learn-header-action、「更多课程操作」learn-header-more-toggle、
+    //     「打开文科AI助教」learn-agent-launcher —— 必须排除，否则小节按钮会被「更多课程操作」抢走，
+    //     导致跨小节时展开错误的下拉 → 匹配失败 → 误判“小节已结束” → 误跳章节。
+    function headerDropdowns() {
+        var btns = document.querySelectorAll('header button[aria-expanded], [class*="header"] button[aria-expanded], nav button[aria-expanded], button[aria-expanded]');
+        var chapter = null, section = null;
+        for (var i = 0; i < btns.length; i++) {
+            if (!isVisible(btns[i])) continue;
+            var label = btns[i].getAttribute('aria-label') || '';
+            if (!label) continue;
+            var cls = typeof btns[i].className === 'string' ? btns[i].className : (btns[i].getAttribute ? (btns[i].getAttribute('class') || '') : '');
+            // 黑名单：排除平台的功能按钮（更多课程操作 / 文科AI助教 / 无意义的 header-action）
+            if (/learn-header-action|learn-header-more|learn-agent|more-toggle|more-menu/.test(cls)) continue;
+            if (/更多课程操作|打开.*助教|更多|收起|关闭/.test(label)) continue;
+            if (looksLikeChapterHeading(label)) { if (!chapter) chapter = btns[i]; }
+            else { if (!section) section = btns[i]; }
+        }
+        logDebug('nav', '章节按钮=' + (chapter ? (chapter.getAttribute('aria-label') || '?') : '未找到')
+            + ' | 小节按钮=' + (section ? (section.getAttribute('aria-label') || '?') : '未找到'));
+        return { chapter: chapter, section: section };
+    }
+
+    // 下拉菜单里“可点项”的候选选择器（下拉展开后的 DOM 未知，多给几组候选）
+    function menuItemSels() {
+        return [
+            '[role="menuitem"]', '[role="option"]', '[class*="menuitem"]', '[class*="menu-item"]',
+            '[class*="dropdown"] a', '[class*="dropdown"] li', '[class*="dropdown"] button',
+            '[class*="popover"] a', '[class*="popover"] li', '[class*="popup"] a', '[class*="popup"] li',
+            '[class*="option"]', '[class*="choice"]', '[class*="select"] a', '[class*="select"] li',
+            'a', 'li', 'button',
+        ];
+    }
+
+    // 展开下拉按钮，返回展开后的面板容器（找不到返回 null）。
+    // 健壮策略：点击前记录候选面板 → 点击 → 优先找「新出现」的面板；
+    // 若下拉本就处于展开态（无新面板），则返回按钮祖先里任意可见面板，
+    // 保证「已展开状态下重新取菜单」也能命中。
+    async function expandDropdown(btn) {
+        if (!btn) return null;
+        var before = collectCandidates(document, ['[role="menu"]', '[role="listbox"]', '[class*="dropdown"]', '[class*="popover"]', '[class*="popup"]', '[class*="select-list"]'], 40);
+        if (btn.getAttribute('aria-expanded') !== 'true') { realClick(btn); }
+        await sleep(400);
+        var fallbackPanel = null;
+        // 1) 从按钮向上找父容器里的面板（优先新出现，其次任意可见）
+        var node = btn;
+        for (var depth = 0; node && depth < 5; depth++) {
+            var parent = node.parentElement;
+            if (!parent) break;
+            var sels = ['[role="menu"]', '[role="listbox"]', '[class*="dropdown-menu"]', '[class*="dropdown"]', '[class*="popover"]', '[class*="popup"]'];
+            for (var s = 0; s < sels.length; s++) {
+                var p;
+                try { p = parent.querySelector(sels[s]); } catch (e) { continue; }
+                if (p && isVisible(p)) {
+                    if (before.indexOf(p) === -1) return p;
+                    if (!fallbackPanel) fallbackPanel = p;
+                }
+            }
+            node = parent;
+        }
+        // 2) 全页面：优先新出现的面板，其次任意可见面板
+        var els = document.querySelectorAll('[role="menu"], [role="listbox"], [class*="dropdown-menu"], [class*="dropdown"], [class*="popover"], [class*="popup"]');
+        var anyPanel = null;
+        for (var i = 0; i < els.length; i++) {
+            if (isVisible(els[i])) {
+                if (before.indexOf(els[i]) === -1) return els[i];
+                if (!anyPanel) anyPanel = els[i];
+            }
+        }
+        return anyPanel || fallbackPanel || null;
+    }
+
+    // 判断元素是不是「可点击单元」：a / button / li / option / menuitem / tab
+    function isClickableEl(el) {
+        var tag = el.tagName;
+        if (tag === 'A' || tag === 'BUTTON' || tag === 'LI') return true;
+        var role = el.getAttribute ? (el.getAttribute('role') || '') : '';
+        return role === 'option' || role === 'menuitem' || role === 'tab' || role === 'button';
+    }
+
+    // 取菜单项的完整文本：如果元素是内部碎片（span 等），提升到它的可点父级（a/li/button）再取文本。
+    // 关键：真实菜单项常是 <li><a><span>4.1.3</span><span>人民立场…</span></a></li>，
+    // 若只读 span 会得到不完整文本，导致与按钮 aria-label 匹配失败 → 误判“没下一项” → 误跳章节。
+    function itemFullText(el) {
+        var node = el;
+        if (el.closest) {
+            var up = el.closest('a, li, button, [role="option"], [role="menuitem"], [role="tab"]');
+            if (up && up !== el) node = up;
+        }
+        return cleanText(node.textContent).slice(0, 40);
+    }
+
+    // 从候选里保留「最外层的可点单元」：有可点祖先在集合里的碎片（span/div）一律丢弃；
+    // 若某项没有可点祖先（纯 div/span 菜单），则原样保留。
+    function dedupeClickable(raw) {
+        var out = [];
+        for (var i = 0; i < raw.length; i++) {
+            var el = raw[i];
+            var skip = false;
+            for (var j = 0; j < raw.length; j++) {
+                if (i !== j && raw[j] !== el && raw[j].contains(el) && isClickableEl(raw[j])) { skip = true; break; }
+            }
+            if (!skip) out.push(el);
+        }
+        return out;
+    }
+
+    // 从候选里保留「最外层的可点单元」，并按 DOM 顺序排序。
+    function menuItemsOf(panel) {
+        var raw = collectCandidates(panel, menuItemSels(), 160);
+        var out = dedupeClickable(raw);
+        out.sort(function (a, b) {
+            if (a.compareDocumentPosition && b.compareDocumentPosition) {
+                return (a.compareDocumentPosition(b) & 4) ? -1 : 1;
+            }
+            return 0;
+        });
+        return out;
+    }
+
+    // 展开下拉后返回菜单项列表。
+    // 优先用面板内的候选；面板找不到时，用「点击前后新出现的可点项」兜底
+    // （展开前记录候选 → 展开后 diff，新出现的项基本就是菜单项）。
+    // 菜单内容多时可以滚动（用户反馈）：若面板内没取到项，先把面板滚到底/中间，
+    // 触发懒渲染/虚拟列表补全后再收一次。
+    async function findDropdownItems(btn) {
+        var before = collectCandidates(document, menuItemSels(), 160);
+        var panel = await expandDropdown(btn);
+        var items = []; // 必须初始化：panel 为 null 时保持空数组，避免后续 items.length 崩溃
+        if (panel) {
+            items = menuItemsOf(panel);
+            if (items.length === 0 && panel.scrollTop !== undefined) {
+                try { panel.scrollTop = panel.scrollHeight; } catch (e) {}
+                await sleep(400);
+                items = menuItemsOf(panel);
+            }
+            if (items.length > 0) return items;
+        }
+        var after = collectCandidates(document, menuItemSels(), 160);
+        var news = [];
+        for (var i = 0; i < after.length; i++) {
+            if (before.indexOf(after[i]) === -1) news.push(after[i]);
+        }
+        var out = dedupeClickable(news);
+        logDebug('menu', '下拉项(面板模式)=' + items.length + ' → diff兜底=' + out.length
+            + ' | 面板=' + (panel ? (panel.className ? String(panel.className).slice(0, 40) : panel.tagName) : 'null'));
+        return out;
+    }
+
+    // 点击下拉菜单选项：先提升到可点父级（span → a/li/button，点击才有效），
+    // 再滚入面板可视区（长菜单/虚拟列表可能未渲染），最后模拟点击。
+    function clickMenuItem(el) {
+        var target = el;
+        if (el.closest) {
+            var up = el.closest('a, li, button, [role="option"], [role="menuitem"], [role="tab"]');
+            if (up && up !== el) target = up;
+        }
+        try { if (target.scrollIntoView) target.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+        realClick(target);
+    }
+
+    // 分组标题识别：小节下拉里「第一节 xxx / 第二节 xxx」这类是节的分组标题，
+    // 不是可点进入的内容单元（真实内容单元形如 4.1.1 / 4.2.2）。
+    // 匹配/取下一个时必须跳过它们，否则当前节最后一个内容学完时，
+    // 「下一个」会拿到分组标题而不是下一节的具体内容。
+    // 注意：只认「第X节」，不能误伤章节名（第四章/第五章等 —— 章节下拉菜单里全是章名）。
+    function isGroupTitle(t) {
+        return /^第[一二三四五六七八九十百\d]+\s*节/.test(t) && !/^\s*\d+(\.\d+)+/.test(t);
+    }
+
+    // 匹配用归一化文本：去掉所有空白再比较。
+    // 关键：菜单项常是 <a><span>4.1.3</span><span>人民立场…</span></a>，
+    // textContent 是「4.1.3人民立场…」（无空格），而按钮 aria-label 是「4.1.3 人民立场…」（有空格），
+    // 不去空白会匹配失败 → 误判“没下一项” → 误跳章节。
+    function normMatch(s) {
+        return String(s === null || s === undefined ? '' : s).replace(/\s+/g, '');
+    }
+
+    // 在菜单项里找「文本与 currentLabel 相似」的项，返回它的下一个；没有下一个返回 null。
+    // 文本相似 = 相等 / 互相包含（归一化空白后比较，精确匹配优先，包含关系兜底）。
+    // 文本一律用 itemFullText 取（提升到可点父级），避免 span 碎片导致匹配失败。
+    // 注意：分组标题（第一节/第二节）也参与匹配和取下一个 —— 有些课程里节标题本身可点
+    // （点它进入该节），直接跳过会让用户觉得“第一节/第二节被跳过”。不可点时由
+    // doSectionJump 的兜底逻辑改点该节第一个内容单元。
+    function nextOfMenuItems(items, currentLabel) {
+        if (!items || items.length === 0) return null;
+        var target = normMatch(currentLabel);
+        var idx = -1;
+        for (var i = 0; i < items.length; i++) {
+            var full = itemFullText(items[i]);
+            var t = normMatch(full);
+            if (!t) continue;
+            if (target && (t === target || t.indexOf(target) !== -1 || target.indexOf(t) !== -1)) { idx = i; break; }
+        }
+        if (idx === -1) return null; // 没找到当前项，无法确定“下一个”
+        var ret = (idx + 1 < items.length) ? items[idx + 1] : null;
+        logDebug('menu', '匹配「' + (String(currentLabel || '').slice(0, 20)) + '」→ idx=' + idx
+            + (ret ? '，下一个=「' + itemFullText(ret).slice(0, 24) + '」' : '，无下一个（当前是最后一项）'));
+        return ret;
+    }
+
+    // —— 跳转三级逻辑 ——
+
+    // 判断内容标签是不是「测验」（按 aria-label / 文本关键词，命中即视为测验）
+    function tabIsQuiz(tab) {
+        var label = (tab.getAttribute && (tab.getAttribute('aria-label') || '')) || '';
+        var txt = cleanText((tab.textContent || '')).slice(0, 30);
+        return /测验|测试|考试|自测|小测|quiz/i.test(label) || /测验|测试|考试|自测|小测|quiz/i.test(txt);
+    }
+
+    // 从当前标签向后找「下一个非测验」的内容标签（跳过测验，满足“测验连进入都不要进入”）
+    function nextTabSkipQuiz(fromTab) {
+        var s = fromTab, skipped = [];
+        while (s) {
+            s = s.nextElementSibling;
+            if (!s) return null;
+            if (s.getAttribute && s.getAttribute('role') === 'tab' && isVisible(s)) {
+                if (tabIsQuiz(s)) { skipped.push(cleanText((s.textContent || '')).slice(0, 12)); continue; } // 跳过测验标签
+                if (skipped.length) logDebug('nav', '同小节内跳过测验标签：' + skipped.join('、'));
+                return s;
+            }
+        }
+        return null;
+    }
+
+    // 标签列表里第一个非测验的（跨小节/章节后自动点它）
+    function firstNonQuizTab(tabs) {
+        for (var i = 0; i < tabs.length; i++) {
+            if (!tabIsQuiz(tabs[i])) return tabs[i];
+        }
+        return null;
+    }
+
+    // 等待内容标签栏完成切换：出现「不是旧激活元素」的新 tab 才算切换成功。
+    // 关键：SPA 框架（React/Vue）会复用 tablist 容器、替换内部 tab 元素，
+    // 所以必须用「元素身份变化」判断（旧元素被新元素替换），不能用 waitForElement
+    // 命中容器里已存在的旧元素——否则会点到上一节的内容。
+    async function waitForTablistRefresh(oldTab) {
+        var t0 = Date.now();
+        while (Date.now() - t0 < 10000) {
+            if (taskState.cancelled) return null;
+            var tabs = contentTabs();
+            if (tabs.length > 0) {
+                var changed = false;
+                for (var i = 0; i < tabs.length; i++) {
+                    if (tabs[i] !== oldTab) { changed = true; break; }
+                }
+                if (changed) {
+                    logDebug('nav', 'tablist 已刷新：' + tabs.length + ' 个内容标签，等待耗时 ' + (Date.now() - t0) + 'ms');
+                    return tabs;
+                }
+            }
+            await sleep(200);
+        }
+        logDebug('nav', '⚠️ tablist 刷新超时（10 秒内旧元素未被替换）');
+        return null;
+    }
+
+    // 展开「小节」下拉，返回「下一个小节」选项；当前小节是最后一项（无下一项）返回 null。
+    // 无下一项时顺手收起下拉，避免残留影响后续章节跳转。
+    async function pickNextSectionItem() {
+        var dd = headerDropdowns();
+        if (!dd.section) { logDebug('nav', '⚠️ 未找到「小节」下拉按钮'); return null; }
+        var name = dd.section.getAttribute('aria-label') || '';
+        logDebug('nav', '跨小节决策：小节名=「' + name.slice(0, 24) + '」');
+        var items = await findDropdownItems(dd.section);
+        var next = nextOfMenuItems(items, name);
+        if (!next) {
+            logDebug('nav', '小节下拉无下一项 → 判定当前小节是本章最后一项，进入跨章节');
+            if (dd.section.getAttribute('aria-expanded') === 'true') realClick(dd.section);
+            return null;
+        }
+        logDebug('nav', '跨小节目标=「' + itemFullText(next).slice(0, 24) + '」');
+        return next;
+    }
+
+    // 展开「章节」下拉，返回「下一个章节」选项；无下一项（全部章节学完）返回 null。
+    async function pickNextChapterItem() {
+        var dd = headerDropdowns();
+        if (!dd.chapter) { logDebug('nav', '⚠️ 未找到「章节」下拉按钮'); return null; }
+        var name = dd.chapter.getAttribute('aria-label') || '';
+        logDebug('nav', '跨章节决策：章节名=「' + name.slice(0, 24) + '」');
+        var items = await findDropdownItems(dd.chapter);
+        var next = nextOfMenuItems(items, name);
+        if (!next) {
+            logDebug('nav', '章节下拉无下一项 → 判定全部章节学完');
+            if (dd.chapter.getAttribute('aria-expanded') === 'true') realClick(dd.chapter);
+            return null;
+        }
+        logDebug('nav', '跨章节目标=「' + itemFullText(next).slice(0, 24) + '」');
+        return next;
+    }
+
+    // 执行跨小节：点击小节选项 → 等新 tablist → 点第一个非测验内容标签
+    // 兜底：点击的是分组标题（第一节/第二节）且平台不响应（tablist 未刷新）时，
+    // 自动改点该分组标题后面的第一个内容单元，保证不会卡在“节标题被跳过/无反应”。
+    async function doSectionJump(item) {
+        var oldTab = currentContentTab();
+        clickMenuItem(item);
+        updateStatus('📚 跨小节：进入下一节，自动播放第一个内容...');
+        var tabs = await waitForTablistRefresh(oldTab);
+        if (!tabs || tabs.length === 0) {
+            // 分组标题可能只是定位/无点击效果：改点该节第一个内容单元
+            logDebug('nav', '⚠️ 点击「' + itemFullText(item).slice(0, 20) + '」后 tablist 未刷新，改点该节第一个内容单元');
+            var dd = headerDropdowns();
+            if (dd.section) {
+                var items = await findDropdownItems(dd.section);
+                var idx = items.indexOf(item);
+                var nextContent = null;
+                for (var j = idx + 1; j < items.length; j++) {
+                    var ft = itemFullText(items[j]);
+                    if (ft && !isGroupTitle(ft)) { nextContent = items[j]; break; }
+                }
+                if (nextContent) {
+                    clickMenuItem(nextContent);
+                    tabs = await waitForTablistRefresh(oldTab);
+                }
+            }
+        }
+        if (!tabs || tabs.length === 0) return false;
+        var first = firstNonQuizTab(tabs) || tabs[0];
+        realClick(first);
+        await waitForTabActive(first);
+        return true;
+    }
+
+    // 执行跨章节：点击章节选项 → 等新 tablist（必要时先点第一个小节）→ 点第一个非测验内容标签
+    async function doChapterJump(item) {
+        var oldTab = currentContentTab();
+        clickMenuItem(item);
+        updateStatus('📕 跨章节：进入下一章，自动播放第一个内容...');
+        var tabs = await waitForTablistRefresh(oldTab);
+        if (!tabs || tabs.length === 0) {
+            // 若平台未自动选中第一小节，展开小节下拉点第一项
+            var dd2 = headerDropdowns();
+            if (dd2.section) {
+                var items2 = await findDropdownItems(dd2.section);
+                if (items2.length > 0) { clickMenuItem(items2[0]); await sleep(600); }
+            }
+            tabs = await waitForTablistRefresh(oldTab);
+        }
+        if (!tabs || tabs.length === 0) return false;
+        var first = firstNonQuizTab(tabs) || tabs[0];
+        realClick(first);
+        await waitForTabActive(first);
+        return true;
+    }
+
+    // 主跳转入口（严格三级优先级：同小节 → 跨小节 → 跨章节 → 结束）
+    // 关键修复：跨小节必须先确认「小节下拉里确实有下一项」才执行；
+    // 只有确认当前小节是最后一项，才会进入跨章节——从根上杜绝“节没学完就跳章”。
+    async function goNext() {
+        // 当前激活的内容标签（页面加载慢时等它出现）
+        var curTab = currentContentTab();
+        if (!curTab) {
+            logDebug('nav', '当前激活 tab 未找到，等待出现...');
+            curTab = await waitForElement('[role="tab"][aria-selected="true"]', 5000);
+            if (!curTab) { logDebug('nav', '❌ 5 秒后仍无激活 tab'); updateStatus('❌ 未找到当前内容标签，无法跳转'); return false; }
+        }
+        logDebug('nav', 'goNext 入口：当前激活 tab=「' + (curTab.getAttribute('aria-label') || cleanText(curTab.textContent).slice(0, 20)) + '」');
+        // 优先级 1：同小节内 —— 向后找下一个「非测验」内容标签
+        var target = nextTabSkipQuiz(curTab);
+        if (target) {
+            realClick(target);
+            updateStatus('➡️ 同小节：进入下一个内容');
+            logDebug('nav', '优先级1 同小节：点击「' + (target.getAttribute('aria-label') || cleanText(target.textContent).slice(0, 20)) + '」');
+            await waitForTabActive(target);
+            return true;
+        }
+        logDebug('nav', '优先级1 无下一个同小节 tab（已到本节末尾）');
+        // 优先级 2：跨小节 —— 先确认小节下拉里确有下一项
+        var secItem = await pickNextSectionItem();
+        if (secItem) {
+            if (await doSectionJump(secItem)) return true;
+            // 跨小节执行失败（点击了但内容未加载）：重试一次，绝不误跳章节
+            updateStatus('⚠️ 跨小节执行失败，10 秒后自动重试...');
+            logDebug('nav', '⚠️ 跨小节失败，10 秒后重试');
+            await sleepWhile(10000, function () { return manualWaitFlag; });
+            secItem = await pickNextSectionItem();
+            if (secItem && await doSectionJump(secItem)) return true;
+            logDebug('nav', '⚠️ 跨小节连续失败');
+            updateStatus('⚠️ 跨小节连续失败：请手动点击「小节」下拉切换，或检查顶部按钮结构');
+            return false;
+        }
+        // 优先级 3：跨章节 —— 已确认当前小节是本章最后一项
+        var chapItem = await pickNextChapterItem();
+        if (chapItem) {
+            if (await doChapterJump(chapItem)) return true;
+            logDebug('nav', '⚠️ 跨章节执行失败');
+            updateStatus('⚠️ 跨章节执行失败：请手动点击「章节」下拉切换，或检查顶部按钮结构');
+            return false;
+        }
+        // 结束状态：所有查找都返回 null
+        logDebug('nav', '🏁 三级跳转全部无目标 → 课程学习完成');
+        alert('课程学习完成！');
+        return false;
+    }
+
+    // 富文本/节标题页等正文是否已经渲染出来（避免内容还没加载完就跳走）
+    function hasVisibleContentBody() {
+        var sels = [
+            'main p', 'main h1', 'main h2', 'main h3', 'main h4',
+            '[class*="content"] p', '[class*="content"] h1', '[class*="content"] h2', '[class*="content"] h3',
+            '[class*="lesson"] p', '[class*="learn-content"] p', '[class*="rich-text"] p',
+            '[class*="section-title"]', '[class*="chapter-title"]', '[class*="lesson-title"]',
+            '[class*="learn-section"]', '[class*="learn-lesson-title"]',
+        ];
+        var hits = collectCandidates(document, sels, 80);
+        for (var i = 0; i < hits.length; i++) {
+            var el = hits[i];
+            if (!isVisible(el)) continue;
+            var t = cleanText((el.textContent || '')).slice(0, 80);
+            if (!t || t.length < 2) continue;
+            // 排除脚本面板/导航等 UI 外壳文本与加载占位
+            if (/MOOC 助手|自动学习|停止当前操作|页面 DOM 诊断|开始自动学习|加载中|loading|努力加载/.test(t)) continue;
+            var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            if (r && (r.width < 60 || r.height < 20)) continue;
+            return true;
+        }
+        return false;
+    }
+
+    // 等待当前内容真正加载出来（SPA 异步渲染）。
+    // 视频/文档/讨论/富文本正文任一出现即算就绪；超时仍未出现 → 返回 false（按加载失败处理）。
+    async function waitContentReady(timeout) {
+        var t0 = Date.now();
+        while (Date.now() - t0 < timeout) {
+            if (taskState.cancelled) return false;
+            if (findVideo()) { logDebug('load', '内容就绪：video（' + (Date.now() - t0) + 'ms）'); return true; }
+            if (findDocViewer()) { logDebug('load', '内容就绪：文档查看器（' + (Date.now() - t0) + 'ms）'); return true; }
+            if (looksLikeDiscussionPage()) { logDebug('load', '内容就绪：讨论页（' + (Date.now() - t0) + 'ms）'); return true; }
+            if (hasVisibleContentBody()) { logDebug('load', '内容就绪：富文本/标题页正文（' + (Date.now() - t0) + 'ms）'); return true; }
+            await sleep(500);
+        }
+        logDebug('load', '⚠️ 内容加载超时（' + timeout + 'ms 内未见任何正文）');
+        return false;
+    }
+
+    // —— 自动学习主流程 ——
+
+    // 处理当前内容（视频/文档/测验/讨论），然后自动进入下一个内容
+    async function learnOne() {
+        var st = learnLoadState();
+        if (!st) { setFloatVisible(false); return; }
+        // 上一轮跳转完成，清掉「用户点了【下一节】」的标志，避免误跳过本轮内容
+        manualWaitFlag = false;
+        await sleep(500);
+        await dismissModal();
+        // 等当前内容真正加载出来（修复：文档/课件还没渲染完就跳转）
+        updateStatus('⏳ 等待内容加载...');
+        var ready = await waitContentReady(CONFIG.LEARN_CONTENT_READY_WAIT);
+        if (taskState.cancelled) { learnClearState(); setFloatVisible(false); return; }
+        var type;
+        if (!ready) {
+            updateStatus('⚠️ 内容加载超时（15 秒未渲染出来），按加载失败跳过...');
+            type = 'missing';
+        } else {
+            type = detectContentType();
+        }
+        var done = true;
+
+        if (type === 'missing') {
+            // 课件加载失败（unitId/lessonId 不匹配等）→ 快速跳过
+            logDebug('learn', 'missing：跳过，进入下一个内容');
+            updateStatus('⚠️ 内容加载失败，尝试进入下一个内容...');
+            done = true;
+        } else if (type === 'video' && st.lastType === 'video') {
+            // 连续视频跳过：不视频接视频
+            logDebug('learn', '连续视频：跳过当前视频（不视频接视频）');
+            updateStatus('⏭ 跳过连续视频（不视频接视频），进入下一个内容...');
+            done = true;
+        } else if (type === 'video') {
+            done = await learnVideoItem();
+        } else if (type === 'doc') {
+            done = await learnDocItem();
+        } else if (type === 'quiz') {
+            // 测验：导航时已尽量跳过不进入；万一进来了也直接跳过，绝不停留作答
+            logDebug('learn', 'quiz：测验内容直接跳过不进入');
+            updateStatus('⏭ 测验内容：跳过（不进入作答），直接进入下一个内容...');
+            done = true;
+        } else if (type === 'discussion') {
+            done = await learnDiscussionItem();
+        } else {
+            // 富文本等其它内容：停留 10 秒后自动跳转（可随时点右下角【下一节】提前跳）
+            logDebug('learn', 'other：富文本/标题页，停留 ' + CONFIG.LEARN_OTHER_VISIT_MS + 'ms 后跳转');
+            updateStatus('📄 富文本内容：停留 10 秒后自动跳转（可点右下角【下一节】提前跳）...');
+            await sleepWhile(CONFIG.LEARN_OTHER_VISIT_MS, function () { return manualWaitFlag; });
+            done = true;
+        }
+        if (taskState.cancelled || !done) {
+            if (taskState.cancelled) updateStatus('⏹ 已停止当前操作');
+            learnClearState();
+            setFloatVisible(false);
+            return;
+        }
+
+        // 记录上一个内容的类型（用于连续视频跳过）
+        st.lastType = type;
+        learnSaveState(st);
+
+        // 所有类型统一自动进入下一个内容
+        var ok = await goNext();
+        if (!ok) { learnClearState(); setFloatVisible(false); return; }
+        await learnOne();
+    }
+
+    // 用户点击「开始自动学习」：从当前内容开始处理，不跳转
+    async function learnChapter() {
+        if (!/\/learn\//.test(location.pathname) && !/\/spoc\/learn\//.test(location.pathname)) {
+            updateStatus('⚠️ 自动学习只在新版学习页可用（请先进入课程学习页的某个内容）');
+            return;
+        }
+        // 关掉平台自带的“自动播放下一集”，避免和我们自己的跳转抢节奏
+        var autoNext = document.querySelector('input.j-autoNext');
+        if (autoNext && autoNext.checked) { realClick(autoNext); updateStatus('已关闭平台自带的“自动播放下一集”'); }
+
+        learnSaveState({ running: true, course: location.pathname.replace(/\/content\/\d+.*$/, '') || location.pathname, lastType: null });
+        setFloatVisible(true);
+        logDebug('learn', '🚀 手动开始自动学习，课程=' + location.pathname.slice(0, 60));
+        updateStatus('🚀 自动学习开始：从当前内容处理，视频看完自动进入下一个内容...');
+        await learnOne();
+    }
+
+    // 页面初始化时调用：若 localStorage 里还有未完成的自动学习且课程没变，接着跑
+    function resumeLearn() {
+        var st = learnLoadState();
+        if (!st) return;
+        if (st.course && location.pathname.indexOf(st.course) !== 0) { learnClearState(); return; }
+        taskState.running = true;
+        taskState.cancelled = false;
+        setButtonsRunning(true);
+        setFloatVisible(true);
+        logDebug('learn', '▶ 页面刷新，自动学习已恢复（lastType=' + (st.lastType || 'null') + '）');
+        updateStatus('▶ 自动学习已恢复...');
+        Promise.resolve().then(learnOne).catch(function (err) {
+            if (err && err.__cancelled) updateStatus('⏹ 已停止当前操作');
+            else { logDebug('err', '自动学习异常：' + (err && err.message)); console.error('[auto-learn]', err); updateStatus('❌ 自动学习异常：' + (err && err.message)); }
+        }).then(function () {
+            // 只有学习真正结束/被停止时才收尾；等待【下一节】时状态仍在，不收尾
+            if (!learnLoadState()) {
+                taskState.running = false;
+                taskState.cancelled = false;
+                setButtonsRunning(false);
+                setFloatVisible(false);
+            }
+        });
+    }
+
+    // —— 悬浮【下一节】按钮 ——
+    // 用途：① 富文本内容停留期间，点它提前结束等待并进入下一个内容；
+    //       ② 视频播放中/文档翻页中，点它立即跳过当前内容。
+    // 机制：点击只置 manualWaitFlag 标志，当前内容处理循环检测到标志会提前结束，
+    //       然后由 learnOne 统一走 goNext —— 避免按钮直接跳转造成双重跳转。
+    var manualWaitFlag = false;
+
+    function createFloatNextBtn() {
+        if (document.getElementById('mar-float-next')) return;
+        var btn = document.createElement('button');
+        btn.id = 'mar-float-next';
+        btn.textContent = '下一节';
+        btn.title = '立即进入下一个内容（视频/文档/富文本都适用）';
+        btn.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:999999;padding:10px 20px;font-size:14px;color:#fff;background:#e86e4f;border:none;border-radius:20px;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.3);display:none;';
+        btn.addEventListener('click', function () {
+            if (!taskState.running) return;
+            manualWaitFlag = true;
+            updateStatus('⏩ 已请求进入下一个内容...');
+        });
+        document.body.appendChild(btn);
+    }
+
+    function setFloatVisible(v) {
+        var b = document.getElementById('mar-float-next');
+        if (b) b.style.display = v ? 'block' : 'none';
+    }
+
+    // ===================== 页面 DOM 诊断 =====================
+    // 新版 UI 如果改了讨论区类名，点这个按钮会把当前页面的候选结构导出来，
+    // 复制给作者即可精准适配；不会改动页面任何东西。
+    function probeDiscussionDom() {
+        var lines = [];
+        lines.push('URL: ' + location.href);
+        lines.push('Hash: ' + location.hash);
+        lines.push('Title: ' + cleanText(document.title).slice(0, 100));
+        lines.push('');
+        var groups = {
+            '回复列表容器(listSelectors)': DISCUSS.listSelectors,
+            '楼层(itemSelectors)': DISCUSS.itemSelectors,
+            '正文(contentSelectors)': DISCUSS.contentSelectors,
+            '编辑器作用域(editorScope)': DISCUSS.editorScopeSelectors,
+        };
+        var i, key;
+        for (key in groups) {
+            var hits = collectCandidates(document, groups[key], 40);
+            var vis = 0;
+            for (i = 0; i < hits.length; i++) if (isVisible(hits[i])) vis++;
+            lines.push(key + '：命中 ' + hits.length + '（可见 ' + vis + '）');
+        }
+        lines.push('');
+        var dumpSels = {
+            '回复/评论容器': '[class*="reply"], [class*="comment"], [class*="discuss"], [class*="post"], [class*="floor"]',
+            '编辑器': 'textarea, [contenteditable], [class*="editor"], [class*="Editor"]',
+            '点赞/投票': '[class*="vote"], [class*="like"], [class*="zan"], [class*="praise"], [class*="thumb"]',
+            '按钮(回复/发表/发布/提交/发送)': 'button, a, [role="button"], input[type="submit"]',
+            '单选项': 'input[type="radio"], input[type="checkbox"]',
+        };
+        var k2;
+        for (k2 in dumpSels) {
+            var els;
+            try { els = document.querySelectorAll(dumpSels[k2]); } catch (e) { continue; }
+            var shown = 0;
+            for (i = 0; i < els.length && shown < 14; i++) {
+                var el = els[i];
+                if (!isVisible(el)) continue;
+                if (k2.indexOf('按钮') !== -1) {
+                    var tt = cleanText(el.textContent || el.value || '').slice(0, 6);
+                    if (!/回复|发表|发布|提交|发送/.test(tt)) continue;
+                }
+                if (k2.indexOf('单选项') !== -1) {
+                    var lbl = el.closest ? el.closest('label') : null;
+                    var ltxt = lbl ? cleanText(lbl.textContent).slice(0, 24) : '';
+                    lines.push('  [radio] ' + ltxt);
+                    shown++;
+                    continue;
+                }
+                var cls = typeof el.className === 'string' ? el.className : (el.getAttribute ? (el.getAttribute('class') || '') : '');
+                var txt = cleanText(el.textContent || '').slice(0, 40);
+                var idattr = el.id ? ' id="' + el.id + '"' : '';
+                var extra = (el.disabled ? ' [disabled]' : '') + (el.readOnly ? ' [readonly]' : '');
+                lines.push('  <' + String(el.tagName || '').toLowerCase() + ' class="' + cls.slice(0, 90) + '"' + idattr + extra + '> ' + txt);
+                shown++;
+            }
+            if (shown > 0) { lines.push('（' + k2 + ' 可见候选 ' + shown + ' 条）'); lines.push(''); }
+        }
+
+        // 目录/侧栏结构诊断：自动学习的“下一内容”依赖侧栏链接与平台“下一个”按钮
+        lines.push('【目录/侧栏】');
+        var catSels = [
+            '[class*="catalog"]', '[class*="chapter"]', '[class*="lesson"]', '[class*="menu"]',
+            '[class*="sidebar"]', '[class*="mooc-catalog"]', '[class*="mooc-lesson"]', '[class*="mooc-chapter"]',
+            '[class*="mooc-sidebar"]', '[class*="mooc-nav"]', '[class*="course-nav"]', '[class*="learn-nav"]',
+            '[class*="learn-navigation"]', '[class*="learn-list"]', '[class*="learn-lesson"]', '[class*="learn-catalog"]',
+        ];
+        var catSeen = {};
+        for (var ci = 0; ci < catSels.length; ci++) {
+            var cel;
+            try { cel = document.querySelectorAll(catSels[ci]); } catch (e) { continue; }
+            for (var cj = 0; cj < cel.length && cj < 6; cj++) {
+                var ce = cel[cj];
+                if (!isVisible(ce) || catSeen[ce]) continue;
+                catSeen[ce] = true;
+                var ccls = typeof ce.className === 'string' ? ce.className : (ce.getAttribute ? (ce.getAttribute('class') || '') : '');
+                var cown = '';
+                if (ce.tagName === 'A') {
+                    var coh = (ce.getAttribute && ce.getAttribute('href')) || '';
+                    cown = ' href="' + coh.slice(0, 110) + '"';
+                }
+                lines.push('  [' + (cj + 1) + '] <' + String(ce.tagName || '').toLowerCase() + ' class="' + ccls.slice(0, 100) + '"' + cown + '> ' + cleanText((ce.textContent || '').slice(0, 16)));
+                var aels = ce.querySelectorAll('a[href*="/content/"], a[href*="id="], [data-content-id], [data-id]');
+                var shownA = 0;
+                for (var ak = 0; ak < aels.length && shownA < 8; ak++) {
+                    var ae = aels[ak];
+                    var ah = (ae.getAttribute && ae.getAttribute('href')) || '';
+                    var aid = (ae.getAttribute && (ae.getAttribute('data-content-id') || ae.getAttribute('data-id'))) || '';
+                    var atxt = cleanText((ae.textContent || '').slice(0, 20));
+                    if (!ah && !aid && !atxt) continue;
+                    lines.push('      <a href="' + ah.slice(0, 110) + '" data="' + aid + '"> ' + atxt);
+                    shownA++;
+                }
+            }
+        }
+        lines.push('【所有 learn-navigation / 本课程链接】');
+        var allNav = document.querySelectorAll('a[class*="navigation"], a[class*="learn-nav"], a[href*="/mooc/learn/"], a[href*="/content/"]');
+        var shownNav = 0;
+        var navSeen = {};
+        for (var nv = 0; nv < allNav.length && shownNav < 16; nv++) {
+            var nav = allNav[nv];
+            if (!isVisible(nav) || navSeen[nav]) continue;
+            navSeen[nav] = true;
+            var navcls = typeof nav.className === 'string' ? nav.className : (nav.getAttribute ? (nav.getAttribute('class') || '') : '');
+            var navhref = (nav.getAttribute && nav.getAttribute('href')) || '';
+            var navtxt = cleanText((nav.textContent || '').slice(0, 20));
+            lines.push('  <a class="' + navcls.slice(0, 80) + '" href="' + navhref.slice(0, 120) + '"> ' + navtxt);
+            shownNav++;
+        }
+        if (shownNav === 0) lines.push('  （页面里没有任何 /mooc/learn 或 /content 链接）');
+        lines.push('【“下一个/下一节”入口】');
+        var nextEls = document.querySelectorAll('a, button, [role="button"]');
+        var shownN = 0;
+        for (var nk = 0; nk < nextEls.length && shownN < 6; nk++) {
+            var nel = nextEls[nk];
+            if (!isVisible(nel)) continue;
+            var nlabel = nel.getAttribute ? (nel.getAttribute('aria-label') || nel.getAttribute('title') || '') : '';
+            var ntxt = cleanText((nel.textContent || '').slice(0, 8));
+            if (!/下一个|下一节|下一讲|下一章|下一单元|下一课|下个|下页/.test(ntxt) && !/下一个|下一节|下一讲/.test(nlabel)) continue;
+            var ncls2 = typeof nel.className === 'string' ? nel.className : (nel.getAttribute ? (nel.getAttribute('class') || '') : '');
+            var nhref = (nel.getAttribute && nel.getAttribute('href')) || '';
+            lines.push('  <' + String(nel.tagName || '').toLowerCase() + ' class="' + ncls2.slice(0, 80) + '" href="' + nhref.slice(0, 110) + '"> ' + ntxt);
+            shownN++;
+        }
+        if (shownN === 0) lines.push('  （未找到“下一个”入口 —— 将退化为按内容 ID +1 导航）');
+        lines.push('【章节标题候选】');
+        var chs = document.querySelectorAll('[class*="titleBar"], [class*="crumb"], [class*="breadcrumb"], [class*="chapter-title"], [class*="catalog-title"], [class*="mooc-catalog"] h3, [class*="mooc-catalog"] h4, [class*="mooc-catalog"] [class*="title"], [class*="learn-title"], [class*="learn-chapter"], [class*="learn-lesson-title"], [class*="learn-navigation"] h3, [class*="learn-navigation"] h4, [class*="learn-navigation"] [class*="title"]');
+        var shownT = 0;
+        for (var tk = 0; tk < chs.length && shownT < 6; tk++) {
+            var tel = chs[tk];
+            var tt3 = cleanText((tel.textContent || '').slice(0, 30));
+            if (!tt3) continue;
+            var tcls3 = typeof tel.className === 'string' ? tel.className : (tel.getAttribute ? (tel.getAttribute('class') || '') : '');
+            lines.push('  <' + String(tel.tagName || '').toLowerCase() + ' class="' + tcls3.slice(0, 80) + '"> ' + tt3);
+            shownT++;
+        }
+
+        lines.push('【顶部章节/小节下拉按钮】');
+        var ddBtns = document.querySelectorAll('header button[aria-expanded], [class*="header"] button[aria-expanded], nav button[aria-expanded], button[aria-expanded]');
+        var shownD = 0;
+        for (var dk = 0; dk < ddBtns.length && shownD < 8; dk++) {
+            var db = ddBtns[dk];
+            if (!isVisible(db)) continue;
+            var dl = db.getAttribute('aria-label') || '';
+            var dcls = typeof db.className === 'string' ? db.className : (db.getAttribute ? (db.getAttribute('class') || '') : '');
+            var dexp = db.getAttribute('aria-expanded') || '';
+            lines.push('  <button aria-expanded="' + dexp + '" aria-label="' + dl.slice(0, 40) + '" class="' + dcls.slice(0, 80) + '">');
+            shownD++;
+        }
+        if (shownD === 0) lines.push('  （页面里没有找到带 aria-expanded 的下拉按钮）');
+        lines.push('【内容标签栏 role=tablist】');
+        var tablists = document.querySelectorAll('[role="tablist"]');
+        var shownTab = 0;
+        for (var tl = 0; tl < tablists.length && tl < 3; tl++) {
+            var tbs = tablists[tl].querySelectorAll('[role="tab"]');
+            for (var tb = 0; tb < tbs.length && shownTab < 24; tb++) {
+                var lb = tbs[tb].getAttribute('aria-label') || '';
+                var sel = tbs[tb].getAttribute('aria-selected') || '';
+                lines.push('  <tab aria-selected="' + sel + '" aria-label="' + lb.slice(0, 40) + '"> ' + cleanText((tbs[tb].textContent || '').slice(0, 20)));
+                shownTab++;
+            }
+        }
+        if (tablists.length === 0) lines.push('  （页面里没有 role=tablist 标签栏）');
+
+        lines.push('—— 把以上内容完整复制并发给作者，即可精准适配新版 UI ——');
+        showTextOverlay('页面 DOM 诊断（请复制全部内容）', lines.join('\n'));
+        updateStatus('🔎 已生成页面 DOM 诊断，浮层里可直接复制');
+    }
+
     // ===================== 初始化 =====================
     function init() {
-        // 网络探针必须在页面加载时就装好：装晚了页面自己的请求已经发完，
-        // 抓不到任何东西（第一次采集就是这样，network 是空的）。
-        if (CONFIG.QUIZ_PROBE_AUTOSTART) installNetworkProbe();
         // 恢复上次的复制开关状态（页面刷新后不用再点一次）
         applyCopyUnlock(isCopyUnlockOn());
         createFloatingPanel();
+        // 悬浮【下一节】按钮（自动学习运行时显示）
+        createFloatNextBtn();
+        // 新版路径路由整页刷新后，接着跑上次未完成的自动学习
+        resumeLearn();
     }
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
         setTimeout(init, 1000);
