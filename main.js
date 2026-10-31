@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.9.11
-// @description  中国大学MOOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI，含页面DOM诊断）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击；测验自动跳过、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。
+// @version      1.10.0
+// @description  中国大学MOOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI，含页面DOM诊断）；随堂测验一键作答并提交（从课件接口取正确答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击；测验自动跳过、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=icourse163.org
@@ -1696,6 +1696,7 @@
             '#mar-discuss-preview::before { background: #0ea5e9; }',
             '#mar-discuss-reply::before   { background: #22c55e; }',
             '#mar-learn-start::before    { background: #f97316; }',
+            '#mar-lesson-quiz::before    { background: #6366f1; }',
             '#mar-learn-probe::before    { background: #14b8a6; }',
             '#mar-stop::before  { background: #e53e3e; }',
             '.mar-btn:hover:not(:disabled) {',
@@ -1901,7 +1902,12 @@
             '    </div>',
             '    <div class="mar-pane" data-pane="auto">',
             '      <button id="mar-learn-start" class="mar-btn">开始自动学习（当前章）</button>',
+            '      <button id="mar-lesson-quiz" class="mar-btn">随堂测验：一键完成并提交</button>',
             '      <button id="mar-learn-probe" class="mar-btn">页面 DOM 诊断</button>',
+            '      <div class="mar-field">',
+            '        <span class="mar-label">随堂测验说明</span>',
+            '        <span class="mar-hint">只在随堂测验（小节里那个「测试」标签）下可用：从课件接口取正确答案→逐题填涂→自动提交。读不到答案就一个选项都不点；有题目匹配不上时只填不交，留给你手动补完。</span>',
+            '      </div>',
             '      <div class="mar-field">',
             '        <span class="mar-label">自动学习说明</span>',
             '        <span class="mar-hint">从当前章第一个内容开始：视频从头播放→看完进入下一个内容（测验/文档/讨论等，不是下一个视频）；文档每页 1 秒自动翻页；讨论自动回复；视频中弹出的题目自动作答（答对自动继续，答错请手动点击播放）。</span>',
@@ -2019,6 +2025,7 @@
         document.getElementById('mar-discuss-clear').addEventListener('click', function () { guard(clearDiscussHistory); });
 
         document.getElementById('mar-learn-start').addEventListener('click', function () { guard(learnChapter); });
+        document.getElementById('mar-lesson-quiz').addEventListener('click', function () { guard(completeLessonQuiz); });
         document.getElementById('mar-learn-probe').addEventListener('click', function () { guard(probeDiscussionDom); });
 
         // 日志页签：复制 / 清空
@@ -2068,6 +2075,577 @@
 
         // 初始收起停止按钮：面板刚出现时没有任务在跑
         setButtonsRunning(false);
+    }
+
+    // ===================== 随堂测验：一键完成并提交 =====================
+    // 随堂测验（新版 UI 里就那个叫「测试」的 tab，组件名 LessonQuizUnit）和单元测验
+    // 是两套不同的东西：
+    //   随堂测验 —— 和视频/文档/讨论同一层，嵌在小节里，通常不限次数；
+    //   单元测验 —— 左侧目录里单独一个节点，往往只有一次机会。
+    // 所以本模块只在明确认出「随堂测验」版式时才动手，而且拿不到答案就一个选项都不点、
+    // 也不提交。随堂测验可以重做，但把单元测验/考试的选项乱点一通是收不回来的。
+    //
+    // 答案来源：站点自己的课件接口（F12 网络面板里搜题面看到的那条 unit-page 请求就是它）
+    //   /front-mooc-learn/api/learn/content/unit-page?courseKey=..&termId=..&lessonId=..&unitId=..
+    // 返回的 result.quizData.questions 里，每题有 options[{id,label}] 和 correctOptionIds，
+    // 把 correctOptionIds 映射回 options[].label 就是正确选项的文案，再拿文案去匹配页面上
+    // 每个 label 的文字。
+    //
+    // 为什么以文案为主、ID 为辅：页面 DOM 里 input 的 id 常被平台加前缀（_102476797525894），
+    // 而不同选项的 id 可能互为后缀——比如 102476797525894 正好是 1102476797525894 的结尾，
+    // 用 indexOf/includes 比对 ID 会误命中，必须整段相等才算。
+    var LESSON_QUIZ = {
+        API: '/front-mooc-learn/api/learn/content/unit-page',
+        // 随堂测验容器：命中任一即认为是这个版式
+        scopeSelectors: [
+            '[class*="LessonQuizUnit"]', '[class*="lesson-quiz"]', '[class*="lessonQuiz"]',
+            '[class*="LessonQuiz"]', '[class*="quiz-unit"]', '[class*="quizUnit"]',
+        ],
+        // 单题容器
+        blockSelectors: [
+            'article', 'fieldset',
+            '[class*="questionItem"]', '[class*="question-item"]', '[class*="questionBlock"]',
+        ],
+        MAX_BLOCKS: 60,
+        SUBMIT_TEXT: /^(提交|提交答案|提交试卷|交卷)$/,
+        RE_ANSWER_TEXT: /^(重新答题|重做|再做一次|重新开始)$/,
+    };
+
+    // 去标签。接口里的 title/label 都是 HTML 片段（<p>…</p>）
+    function lqStripTags(s) {
+        return String(s === null || s === undefined ? '' : s)
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/&nbsp;/gi, ' ')
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>')
+            .replace(/&amp;/gi, '&');
+    }
+
+    // 比对用的归一化：只留汉字/字母/数字，去掉标点、空白、题号前缀。
+    // 页面上题面常带「1.」「（2分）」「单选题」这类杂讯，接口标题又是 HTML，
+    // 两边都不是干净字符串，不归一化基本对不上。
+    function lqKey(s) {
+        return lqStripTags(s).replace(/[^\u4e00-\u9fffa-zA-Z0-9]/g, '').toLowerCase();
+    }
+
+    // 从地址栏凑出接口参数。新版路径路由带 tid/unitId；
+    // 缺了就从目录里指向同一课件的链接上补——参数不全接口会报课件不存在。
+    function lqContext() {
+        var path = location.pathname;
+        var search = String(location.search || '').replace(/^\?/, '');
+        var hash = location.hash || '';
+        var ctx = { courseKey: null, lessonId: null, termId: null, unitId: null, entryMode: 'learn' };
+        var m, sp;
+
+        m = path.match(/\/(?:mooc|spoc)\/learn\/([^\/?#]+)/);
+        if (m) ctx.courseKey = decodeURIComponent(m[1]);
+
+        m = path.match(/\/content\/(\d+)/);
+        if (m) ctx.lessonId = m[1];
+        if (!ctx.lessonId) { m = hash.match(/[?&]id=(\d+)/); if (m) ctx.lessonId = m[1]; }
+
+        function takeParams(qs) {
+            if (!qs) return;
+            try { sp = new URLSearchParams(qs); } catch (e) { return; }
+            if (!ctx.termId) ctx.termId = sp.get('tid') || sp.get('termId');
+            if (!ctx.unitId) ctx.unitId = sp.get('unitId');
+            var em = sp.get('entryMode');
+            if (em) ctx.entryMode = em;
+        }
+        takeParams(search);
+        if (hash.indexOf('?') !== -1) takeParams(hash.slice(hash.indexOf('?') + 1));
+
+        if (ctx.lessonId && (!ctx.unitId || !ctx.termId)) {
+            var links = document.querySelectorAll('a[href]');
+            for (var i = 0; i < links.length; i++) {
+                var href = links[i].getAttribute('href') || '';
+                if (href.indexOf(String(ctx.lessonId)) === -1) continue;
+                try {
+                    takeParams(new URL(href, location.href).search.replace(/^\?/, ''));
+                } catch (e) { /* 相对地址解析失败就跳过 */ }
+                if (ctx.unitId && ctx.termId) break;
+            }
+        }
+        return ctx;
+    }
+
+    function lqScope() {
+        var hits = collectCandidates(document, LESSON_QUIZ.scopeSelectors, 20);
+        var hasInput = 'input[type="radio"], input[type="checkbox"], input[type="text"], textarea';
+        for (var i = 0; i < hits.length; i++) {
+            if (!isVisible(hits[i])) continue;
+            if (hits[i].querySelector(hasInput)) return hits[i];
+        }
+        return null;
+    }
+
+    // 页面上的题目区块。优先 article/fieldset；没有就从选项输入框往上爬，
+    // 爬到「同一题的所有选项」那个容器为止。
+    function lqBlocks(scope) {
+        var root = scope || document;
+        var out = [];
+        var inputSel = 'input[type="radio"], input[type="checkbox"], input[type="text"], textarea';
+        var shapeSel = 'input[type="radio"], input[type="checkbox"]';
+        var cands = collectCandidates(root, LESSON_QUIZ.blockSelectors, LESSON_QUIZ.MAX_BLOCKS * 4);
+        var i;
+
+        for (i = 0; i < cands.length && out.length < LESSON_QUIZ.MAX_BLOCKS; i++) {
+            var el = cands[i];
+            if (!isVisible(el)) continue;
+            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay')) continue;
+            if (!el.querySelector(inputSel)) continue;
+            // 老版单元测验/作业的题块，明确不碰
+            if (el.querySelector('.u-questionItem')) continue;
+            if (out.indexOf(el) === -1) out.push(el);
+        }
+        if (out.length > 0) return out;
+
+        var inputs = root.querySelectorAll(shapeSel);
+        var seen = [];
+        for (i = 0; i < inputs.length && out.length < LESSON_QUIZ.MAX_BLOCKS; i++) {
+            if (!isVisible(inputs[i])) continue;
+            var node = inputs[i].parentElement, hops = 0;
+            while (node && hops < 8) {
+                if (node.querySelectorAll(shapeSel).length >= 2) break;
+                node = node.parentElement;
+                hops++;
+            }
+            if (!node || seen.indexOf(node) !== -1) continue;
+            if (node.querySelector('.u-questionItem')) continue;
+            seen.push(node);
+            out.push(node);
+        }
+        return out;
+    }
+
+    // 题干：把选项（label/input/选项容器）整个摘掉，剩下的才是题面。
+    // 直接取 block.querySelector('p') 不可靠——有的版式选项本身也是 <p>。
+    function lqBlockText(block) {
+        var clone = block.cloneNode(true);
+        var drop = clone.querySelectorAll(
+            'label, input, textarea, button, select, option, ' +
+            '[class*="option"], [class*="Option"], [class*="answer"], [class*="Answer"]'
+        );
+        for (var i = drop.length - 1; i >= 0; i--) {
+            if (drop[i].parentNode) drop[i].parentNode.removeChild(drop[i]);
+        }
+        return cleanText(clone.textContent || '');
+    }
+
+    function lqOptionText(el) {
+        if (!el) return '';
+        var clone = el.cloneNode(true);
+        var ins = clone.querySelectorAll('input');
+        for (var i = 0; i < ins.length; i++) {
+            if (ins[i].parentNode) ins[i].parentNode.removeChild(ins[i]);
+        }
+        return cleanText(clone.textContent || '');
+    }
+
+    function lqOptions(block) {
+        var out = [];
+        var i;
+        var labels = block.querySelectorAll('label');
+        for (i = 0; i < labels.length; i++) {
+            var lb = labels[i];
+            if (!isVisible(lb)) continue;
+            var input = lb.querySelector('input');
+            if (!input) {
+                var forId = lb.getAttribute('for');
+                if (forId) {
+                    try { input = block.querySelector('[id="' + CSS.escape(forId) + '"]') || document.getElementById(forId); }
+                    catch (e) { input = document.getElementById(forId); }
+                }
+            }
+            if (!input) continue;
+            out.push({ el: lb, input: input, text: lqOptionText(lb) });
+        }
+        if (out.length === 0) {
+            // 有的版式把 input 放在 label 外面
+            var inputs = block.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+            for (i = 0; i < inputs.length; i++) {
+                if (!isVisible(inputs[i]) || inputs[i].disabled) continue;
+                var wrap = (inputs[i].closest && inputs[i].closest('label')) || inputs[i].parentElement;
+                out.push({ el: wrap, input: inputs[i], text: lqOptionText(wrap) });
+            }
+        }
+        return out;
+    }
+
+    // input 上所有可能是「平台选项 ID」的数字段。要求整段比对：
+    // 见模块开头那条后缀陷阱，这里绝不能退化成 includes。
+    function lqIdTokens(input) {
+        if (!input) return [];
+        var vals = [input.id, input.name, input.value];
+        var attrs = ['data-option-id', 'data-optionid', 'data-id', 'data-value'];
+        for (var i = 0; i < attrs.length; i++) {
+            var v = input.getAttribute ? input.getAttribute(attrs[i]) : null;
+            if (v) vals.push(v);
+        }
+        var out = [];
+        for (var j = 0; j < vals.length; j++) {
+            var parts = String(vals[j] === null || vals[j] === undefined ? '' : vals[j]).split(/[^0-9]+/);
+            for (var k = 0; k < parts.length; k++) {
+                if (parts[k] && parts[k].length >= 6 && out.indexOf(parts[k]) === -1) out.push(parts[k]);
+            }
+        }
+        return out;
+    }
+
+    function lqParseApiQuestion(q) {
+        if (!q) return null;
+        var opts = q.options || q.optionList || [];
+        var rawIds = q.correctOptionIds || q.correctOptionId || [];
+        if (typeof rawIds === 'string') rawIds = rawIds.split(/[,\s]+/);
+        var ids = [], labels = [], i, j;
+
+        if (rawIds && rawIds.length) {
+            for (i = 0; i < rawIds.length; i++) if (rawIds[i] !== null && rawIds[i] !== undefined && rawIds[i] !== '') ids.push(String(rawIds[i]));
+        }
+        for (i = 0; i < ids.length; i++) {
+            for (j = 0; j < opts.length; j++) {
+                if (String(opts[j].id) === ids[i]) {
+                    labels.push(lqStripTags(opts[j].label || opts[j].content || ''));
+                    break;
+                }
+            }
+        }
+        // 有的接口不给 correctOptionIds，只在选项上打 answer 标记
+        if (labels.length === 0) {
+            for (i = 0; i < opts.length; i++) {
+                var o = opts[i];
+                if (o && (o.answer === true || o.isAnswer === true || o.correct === true)) {
+                    labels.push(lqStripTags(o.label || o.content || ''));
+                    if (o.id) ids.push(String(o.id));
+                }
+            }
+        }
+        // 填空题：correctAnswer 形如「答案#解析」，多空时用 # 分段
+        var blanks = [];
+        if (q.correctAnswer) {
+            var segs = lqStripTags(q.correctAnswer).split('#');
+            for (i = 0; i < segs.length; i++) {
+                var seg = cleanText(segs[i]);
+                if (seg) blanks.push(seg);
+            }
+        }
+        return {
+            type: q.type,
+            title: lqStripTags(q.title || q.plainTextTitle || ''),
+            ids: ids,
+            labels: labels,
+            blanks: blanks,
+        };
+    }
+
+    async function lqFetchQuestions(ctx) {
+        if (!ctx || !ctx.courseKey || !ctx.lessonId) {
+            return { ok: false, error: '地址栏里解析不到 courseKey / lessonId' };
+        }
+        var qs = [
+            'courseKey=' + encodeURIComponent(ctx.courseKey),
+            'lessonId=' + encodeURIComponent(ctx.lessonId),
+            'entryMode=' + encodeURIComponent(ctx.entryMode || 'learn'),
+        ];
+        if (ctx.termId) qs.push('termId=' + encodeURIComponent(ctx.termId));
+        if (ctx.unitId) qs.push('unitId=' + encodeURIComponent(ctx.unitId));
+        var url = LESSON_QUIZ.API + '?' + qs.join('&');
+        logDebug('quiz', '请求答案接口：' + url);
+
+        var json = null;
+        try {
+            var res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+            if (!res.ok) return { ok: false, error: '接口 HTTP ' + res.status };
+            json = await res.json();
+        } catch (e) {
+            return { ok: false, error: '接口请求失败：' + (e && e.message ? e.message : e) };
+        }
+
+        var quiz = json && json.result && json.result.quizData;
+        var list = quiz && (quiz.questions || quiz.questionList || quiz.questionVoList);
+        if (!list || !list.length) {
+            logDebug('quiz', '接口没给 quizData.questions；result 的键＝'
+                + (json && json.result ? Object.keys(json.result).join(',') : '（无 result）'));
+            return { ok: false, error: '接口里没有 quizData.questions（当前内容可能不是随堂测验）' };
+        }
+        var out = [];
+        for (var i = 0; i < list.length; i++) {
+            var q = lqParseApiQuestion(list[i]);
+            if (q) out.push(q);
+        }
+        if (out.length === 0) return { ok: false, error: '接口返回了题目但没解析出答案' };
+        return { ok: true, questions: out };
+    }
+
+    // 页面上这一题的题面 → 接口里的哪一题。优先精确相等，其次互相包含
+    // （页面多题号/分值、或者文本被截断都会导致两边长度不同）。
+    function lqMatchQuestion(questions, text, used) {
+        var key = lqKey(text);
+        if (!key) return null;
+        var best = null, bestScore = 0;
+        for (var i = 0; i < questions.length; i++) {
+            var q = questions[i];
+            if (used.indexOf(q) !== -1) continue;
+            var k = lqKey(q.title);
+            if (!k) continue;
+            var score = 0;
+            if (k === key) score = 100000 + k.length;
+            else if (key.indexOf(k) !== -1) score = 50000 + k.length;
+            else if (k.indexOf(key) !== -1) score = 40000 + key.length;
+            else if (k.length >= 10 || key.length >= 10) {
+                // 两边都有增删时用五字滑窗覆盖率兜底，命中率够高才认
+                var shorter = k.length <= key.length ? k : key;
+                var longer = k.length <= key.length ? key : k;
+                var hit = 0, total = 0;
+                for (var s = 0; s + 5 <= shorter.length; s += 5) {
+                    total++;
+                    if (longer.indexOf(shorter.substr(s, 5)) !== -1) hit++;
+                }
+                if (total > 0 && hit / total >= 0.85) score = 10000 + shorter.length;
+            }
+            if (score > bestScore) { bestScore = score; best = q; }
+        }
+        return best;
+    }
+
+    // 该题应该勾哪几个选项（返回选项下标）。先用平台 ID 整段比对，
+    // 认不出来再用正确选项的文案匹配。
+    function lqCorrectIndexes(block, q) {
+        var opts = lqOptions(block);
+        var picked = [];
+        var i, j, k;
+
+        if (q.ids && q.ids.length) {
+            for (i = 0; i < opts.length; i++) {
+                var tokens = lqIdTokens(opts[i].input);
+                for (j = 0; j < q.ids.length; j++) {
+                    if (tokens.indexOf(q.ids[j]) !== -1) { picked.push(i); break; }
+                }
+            }
+        }
+
+        if (picked.length === 0 && q.labels && q.labels.length) {
+            for (k = 0; k < q.labels.length; k++) {
+                var target = lqKey(q.labels[k]);
+                if (!target) continue;
+                var best = -1, bestScore = 0;
+                for (i = 0; i < opts.length; i++) {
+                    if (picked.indexOf(i) !== -1) continue;
+                    var t = lqKey(opts[i].text);
+                    if (!t) continue;
+                    var score = 0;
+                    if (t === target) score = 1000 + t.length;
+                    else if (t.indexOf(target) !== -1) score = 500 + target.length;
+                    else if (target.indexOf(t) !== -1 && t.length >= 2) score = 300 + t.length;
+                    if (score > bestScore) { bestScore = score; best = i; }
+                }
+                if (best !== -1) picked.push(best);
+            }
+        }
+
+        picked.sort(function (a, b) { return a - b; });
+        return picked;
+    }
+
+    async function lqApplyAnswer(block, q) {
+        var i;
+
+        // 填空题
+        if (q.type == 3 || /COMPLETION/i.test(String(q.type))) {
+            var fields = [];
+            var raw = block.querySelectorAll('textarea, input[type="text"], input:not([type])');
+            for (i = 0; i < raw.length; i++) {
+                if (isVisible(raw[i]) && !raw[i].disabled && !raw[i].readOnly) fields.push(raw[i]);
+            }
+            if (fields.length === 0 || q.blanks.length === 0) return { ok: false, reason: '填空无输入框/无答案' };
+            // 空的个数对得上才逐空填，否则只填第一空（多出来的多半是解析/说明文字）
+            var use = (fields.length === q.blanks.length) ? q.blanks : [q.blanks[0]];
+            for (i = 0; i < fields.length && i < use.length; i++) {
+                setNativeValue(fields[i], use[i]);
+                await sleep(150);
+            }
+            var allOk = (fields.length <= use.length);
+            for (i = 0; i < fields.length && i < use.length; i++) {
+                if (cleanText(fields[i].value) !== cleanText(use[i])) allOk = false;
+            }
+            return { ok: allOk, reason: '填空' };
+        }
+
+        var idxs = lqCorrectIndexes(block, q);
+        if (idxs.length === 0) return { ok: false, reason: '未匹配到选项' };
+
+        for (i = 0; i < idxs.length; i++) {
+            var opts = lqOptions(block);   // 每次重新查：点一下平台就会重渲染
+            var opt = opts[idxs[i]];
+            if (!opt) continue;
+            if (!opt.input.checked) {
+                try { opt.input.click(); } catch (e) { realClick(opt.input); }
+                if (!opt.input.checked) selectRadio(opt.input);
+                await sleep(CONFIG.DELAY_AFTER_CLICK);
+            }
+        }
+
+        var after = lqOptions(block);
+        var hit = 0;
+        for (i = 0; i < idxs.length; i++) {
+            if (after[idxs[i]] && after[idxs[i]].input.checked) hit++;
+        }
+        return { ok: hit === idxs.length, reason: '选项 ' + hit + '/' + idxs.length };
+    }
+
+    function lqFindSubmit(scope) {
+        var roots = scope ? [scope, document] : [document];
+        for (var r = 0; r < roots.length; r++) {
+            var els = roots[r].querySelectorAll('button, [role="button"], input[type="submit"], a');
+            for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                if (!isVisible(el) || el.disabled) continue;
+                if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-float-next')) continue;
+                var t = cleanText(el.textContent || el.value || '');
+                if (LESSON_QUIZ.SUBMIT_TEXT.test(t)) return el;
+            }
+        }
+        return null;
+    }
+
+    function lqFindReAnswer() {
+        var els = document.querySelectorAll('button, a, [role="button"]');
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (!isVisible(el) || el.disabled) continue;
+            if (LESSON_QUIZ.RE_ANSWER_TEXT.test(cleanText(el.textContent || ''))) return el;
+        }
+        return null;
+    }
+
+    // 提交后可能弹「确定要提交吗」。只点确定/确认类按钮，取消/关闭一律不碰。
+    function lqConfirmButton() {
+        var dlgs = collectCandidates(document, [
+            '[class*="dialog"]', '[class*="Dialog"]', '[class*="modal"]', '[class*="Modal"]',
+            '[class*="popup"]', '[class*="layer"]',
+        ], 30);
+        for (var d = 0; d < dlgs.length; d++) {
+            var dlg = dlgs[d];
+            if (!isVisible(dlg)) continue;
+            if (dlg.clientWidth < 160 || dlg.clientHeight < 80) continue;
+            if (dlg.closest && dlg.closest('#mooc-auto-review-panel, #mar-probe-overlay')) continue;
+            var btns = dlg.querySelectorAll('button, [role="button"], a, input[type="submit"]');
+            for (var b = 0; b < btns.length; b++) {
+                if (!isVisible(btns[b]) || btns[b].disabled) continue;
+                var t = cleanText(btns[b].textContent || btns[b].value || '');
+                if (/^(确定|确认|确认提交|确定提交|继续|是的|好的|提交)$/.test(t)) return btns[b];
+            }
+        }
+        return null;
+    }
+
+    // 提交后弹窗里的成绩文案（解析不出来就返回空，不影响流程）
+    function lqReadResult() {
+        var els = collectCandidates(document, [
+            '[class*="dialog"]', '[class*="Dialog"]', '[class*="modal"]', '[class*="Modal"]',
+            '[class*="result"]', '[class*="Result"]',
+        ], 20);
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (!isVisible(el) || el.clientWidth < 160) continue;
+            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay')) continue;
+            var t = cleanText(el.textContent || '');
+            if (!t || t.length > 300) continue;
+            if (/正确率|答对|答错|得分|本次得分|共\s*\d+\s*题/.test(t)) return t.slice(0, 120);
+        }
+        return '';
+    }
+
+    async function completeLessonQuiz() {
+        if (PAGE_CONFIG.examUrl.test(location.href)) {
+            updateStatus('⚠️ 这是考试页，本功能不处理（考试通常只有一次机会，请手动作答）');
+            return;
+        }
+
+        var scope = lqScope();
+        var blocks = lqBlocks(scope);
+        if (blocks.length === 0) {
+            updateStatus('⚠️ 没检测到随堂测验题目：请先进入小节里的「测试」标签再点我');
+            return;
+        }
+        logDebug('quiz', '检测到随堂测验：容器' + (scope ? '命中' : '未命中（整页兜底）') + '，题块 ' + blocks.length + ' 个');
+
+        // 之前提交过、现在停在结果页：先点「重新答题」回到作答态
+        var re = lqFindReAnswer();
+        if (re) {
+            updateStatus('↻ 检测到已答过，先点「重新答题」...');
+            realClick(re);
+            await sleep(1500);
+            scope = lqScope();
+            blocks = lqBlocks(scope);
+            if (blocks.length === 0) {
+                updateStatus('❌ 重新答题后没找到题目区块，已停止（未提交）');
+                return;
+            }
+        }
+
+        updateStatus('🔎 正在从课件接口读取本次随堂测验的答案...');
+        var res = await lqFetchQuestions(lqContext());
+        if (!res.ok) {
+            updateStatus('❌ 读不到正确答案：' + res.error + '（一个选项都没点，也没提交）');
+            return;
+        }
+        logDebug('quiz', '接口返回 ' + res.questions.length + ' 道题，页面题块 ' + blocks.length + ' 个');
+
+        var used = [], filled = 0, missing = [];
+        for (var i = 0; i < blocks.length; i++) {
+            if (taskState.cancelled) throw makeCancelError();
+            var block = blocks[i];
+            var text = lqBlockText(block);
+            var q = lqMatchQuestion(res.questions, text, used);
+            if (!q) {
+                missing.push(text.slice(0, 24) || ('第 ' + (i + 1) + ' 题'));
+                logDebug('quiz', '第 ' + (i + 1) + ' 题没匹配上答案：' + text.slice(0, 40));
+                continue;
+            }
+            used.push(q);
+            var r = await lqApplyAnswer(block, q);
+            if (r.ok) filled++;
+            else {
+                missing.push(text.slice(0, 24) || ('第 ' + (i + 1) + ' 题'));
+                logDebug('quiz', '第 ' + (i + 1) + ' 题作答不完整：' + r.reason);
+            }
+            updateStatus('📝 作答中 ' + (i + 1) + '/' + blocks.length + ' 题（已填 ' + filled + '）...');
+            await sleep(250);
+        }
+
+        if (filled === 0) {
+            updateStatus('❌ 一题都没能作答（答案和页面题目对不上），已停止，未提交');
+            return;
+        }
+        // 少答一题就提交等于交白卷。宁可留几道让人补，也不替他赌。
+        if (missing.length > 0 || res.questions.length > blocks.length) {
+            var why = missing.length > 0
+                ? ('有 ' + missing.length + ' 题没匹配上答案（' + missing.join(' / ') + '）')
+                : ('接口有 ' + res.questions.length + ' 题、页面只渲染了 ' + blocks.length + ' 题，可能分页显示');
+            updateStatus('⚠️ 已填 ' + filled + ' 题，但' + why + '；请手动补完再点提交（为免交白卷，未自动提交）');
+            return;
+        }
+
+        var submit = lqFindSubmit(scope);
+        if (!submit) {
+            updateStatus('⚠️ ' + filled + ' 题已全部作答，但没找到「提交」按钮，请手动提交');
+            return;
+        }
+        updateStatus('🚀 ' + filled + ' 题已全部作答，正在提交...');
+        realClick(submit);
+        await sleep(1200);
+        for (var c = 0; c < 3; c++) {
+            var okBtn = lqConfirmButton();
+            if (!okBtn) break;
+            logDebug('quiz', '提交确认弹窗，点击「' + cleanText(okBtn.textContent) + '」');
+            realClick(okBtn);
+            await sleep(1500);
+        }
+        await sleep(800);
+        var result = lqReadResult();
+        if (result) logDebug('quiz', '提交结果：' + result);
+        updateStatus('✅ 随堂测验已提交（' + filled + ' 题）' + (result ? '：' + result : ''));
     }
 
     // ===================== 自动学习（新版学习页） =====================
