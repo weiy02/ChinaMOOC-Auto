@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.11.0
-// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；测验自动跳过、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。
+// @version      1.12.0
+// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=icourse163.org
@@ -47,7 +47,7 @@
         LEARN_DOC_PAGE_MS: 1000,        // 文档每页停留 1 秒（用户要求）
         LEARN_NAV_WAIT: 5000,           // 切换内容后的加载等待上限
         LEARN_QUIZ_RESUME_WAIT: 8000,   // 提交视频弹题后，等待视频自动恢复播放的最长时间
-        LEARN_QUIZ_VISIT_MS: 2500,      // （测验改为直接跳过，不再停留；此值保留作兜底）
+        LEARN_QUIZ_VISIT_MS: 2500,      // 非随堂测验（单元测验/作业/考试页）的兜底停留，很短，只为不硬跳
         LEARN_OTHER_VISIT_MS: 10000,    // 富文本等其它内容停留 10 秒后自动跳转（用户要求）
         LEARN_VIDEO_END_MARGIN: 1.5,    // 距视频结尾还剩多少秒视为“已看完”
         LEARN_CONTENT_READY_WAIT: 15000, // 内容加载就绪的最大等待时间（修复“没加载完就跳转”）
@@ -55,10 +55,12 @@
         LEARN_MAX_PAGE_FLIPS: 600,      // 单个文档最多翻多少页（保险上限）
         LEARN_MAX_ITEMS: 200,           // 单章最多处理多少内容（保险上限）
 
-        // ---- SPOC 兼容 ----
-        // SPOC 小节的「测试」就是随堂测验（不限次数），自动学习时直接作答提交；
-        // MOOC 仍维持原有行为（测验跳过），把这里改 false 可让 SPOC 也跳过。
-        LEARN_AUTO_QUIZ_SPOC: true,
+        // ---- 随堂测验（自动学习）----
+        // 小节里那个「测试」就是随堂测验，不限次数、做完可以重做，所以自动学习时
+        // 直接作答并提交（MOOC / SPOC 一致）。单元测验、考试是独立页，永远不碰。
+        LEARN_AUTO_QUIZ: true,
+        // 随堂测验提交后停留多久再跳下一个内容（用户要求 10 秒）
+        LEARN_QUIZ_AFTER_MS: 10000,
     };
 
     var LIST_CONFIG = {
@@ -1932,7 +1934,7 @@
             '      </div>',
             '      <div class="mar-field">',
             '        <span class="mar-label">自动学习说明</span>',
-            '        <span class="mar-hint">从当前章第一个内容开始：视频从头播放→看完进入下一个内容（测验/文档/讨论等，不是下一个视频）；文档每页 1 秒自动翻页；讨论自动回复；视频中弹出的题目自动作答（答对自动继续，答错请手动点击播放）。MOOC 的测验跳过不进入；SPOC 的随堂测验会自动作答提交。</span>',
+            '        <span class="mar-hint">从当前章第一个内容开始：视频从头播放→看完进入下一个内容（随堂测验/文档/讨论等，不是下一个视频）；文档每页 1 秒自动翻页；讨论自动回复；<b>随堂测验自动作答并提交，提交后停留 10 秒再进下一个内容</b>；单元测验/作业/考试不进入。视频中弹出的题目自动作答（答对自动继续，答错请手动点击播放）。</span>',
             '      </div>',
             '    </div>',
             '    <div class="mar-pane" data-pane="log">',
@@ -2966,23 +2968,44 @@
         return '';
     }
 
+    // 作答结果的统一描述，自动学习的状态栏和日志都用它
+    function lqResultText(r) {
+        switch (r && r.reason) {
+            case 'ok': return '已提交';
+            case 'exam': return '这是考试页，不作答';
+            case 'not-lesson-page': return '不是小节里的随堂测验';
+            case 'no-blocks': return '没找到题目';
+            case 'no-answer': return '读不到正确答案';
+            case 'no-answer-all': return '答案与题目全对不上';
+            case 'partial': return '有题目没匹配上';
+            case 'no-submit-btn': return '没找到提交按钮';
+            default: return (r && r.reason) || '未作答';
+        }
+    }
+
     async function completeLessonQuiz() {
         if (PAGE_CONFIG.examUrl.test(location.href)) {
             updateStatus('⚠️ 这是考试页，本功能不处理（考试通常只有一次机会，请手动作答）');
-            return;
+            return { ok: false, submitted: false, reason: 'exam' };
+        }
+        // MOOC 的单元测验/作业是独立路由，也没有随堂测验的容器。
+        // 光凭「页面上有题」就作答等于替人交测验，这里直接拦住。
+        if (!isSpocCourse() && PAGE_CONFIG.quizUrl.test(location.href) && !lqScope()) {
+            updateStatus('⚠️ 这更像单元测验/作业页（不是小节里的随堂测验），本功能不动手，避免消耗答题机会');
+            return { ok: false, submitted: false, reason: 'not-lesson-page' };
         }
         // SPOC 下只在「小节内容页的测试标签」动手。单元测验/作业是独立页，
         // 没有内容条和内容标签栏——在那种页面上作答等于替人考试，直接拒绝。
         if (isSpocCourse() && !spocInLessonPage()) {
             updateStatus('⚠️ SPOC：这不像小节内容页（可能是单元测验/作业/考试），本功能只处理随堂测验');
-            return;
+            return { ok: false, submitted: false, reason: 'not-lesson-page' };
         }
 
         var scope = lqScope();
         var blocks = lqBlocks(scope);
         if (blocks.length === 0) {
             updateStatus('⚠️ 没检测到随堂测验题目：请先进入小节里的「测试」标签再点我');
-            return;
+            return { ok: false, submitted: false, reason: 'no-blocks' };
         }
         logDebug('quiz', '检测到随堂测验：容器' + (scope ? '命中' : '未命中（整页兜底）') + '，题块 ' + blocks.length + ' 个');
 
@@ -2996,7 +3019,7 @@
             blocks = lqBlocks(scope);
             if (blocks.length === 0) {
                 updateStatus('❌ 重新答题后没找到题目区块，已停止（未提交）');
-                return;
+                return { ok: false, submitted: false, reason: 'no-blocks' };
             }
         }
 
@@ -3004,7 +3027,7 @@
         var res = await lqFetchQuestions(lqContext());
         if (!res.ok) {
             updateStatus('❌ 读不到正确答案：' + res.error + '（一个选项都没点，也没提交）');
-            return;
+            return { ok: false, submitted: false, reason: 'no-answer' };
         }
         logDebug('quiz', '接口返回 ' + res.questions.length + ' 道题，页面题块 ' + blocks.length + ' 个');
 
@@ -3032,7 +3055,7 @@
 
         if (filled === 0) {
             updateStatus('❌ 一题都没能作答（答案和页面题目对不上），已停止，未提交');
-            return;
+            return { ok: false, submitted: false, reason: 'no-answer-all' };
         }
         // 少答一题就提交等于交白卷。宁可留几道让人补，也不替他赌。
         if (missing.length > 0 || res.questions.length > blocks.length) {
@@ -3040,13 +3063,13 @@
                 ? ('有 ' + missing.length + ' 题没匹配上答案（' + missing.join(' / ') + '）')
                 : ('接口有 ' + res.questions.length + ' 题、页面只渲染了 ' + blocks.length + ' 题，可能分页显示');
             updateStatus('⚠️ 已填 ' + filled + ' 题，但' + why + '；请手动补完再点提交（为免交白卷，未自动提交）');
-            return;
+            return { ok: true, submitted: false, reason: 'partial', filled: filled, missing: missing.length };
         }
 
         var submit = lqFindSubmit(scope);
         if (!submit) {
             updateStatus('⚠️ ' + filled + ' 题已全部作答，但没找到「提交」按钮，请手动提交');
-            return;
+            return { ok: true, submitted: false, reason: 'no-submit-btn', filled: filled };
         }
         updateStatus('🚀 ' + filled + ' 题已全部作答，正在提交...');
         realClick(submit);
@@ -3062,6 +3085,38 @@
         var result = lqReadResult();
         if (result) logDebug('quiz', '提交结果：' + result);
         updateStatus('✅ 随堂测验已提交（' + filled + ' 题）' + (result ? '：' + result : ''));
+        return { ok: true, submitted: true, reason: 'ok', filled: filled, result: result || '' };
+    }
+
+    // 当前页面是不是「小节里的随堂测验」——只有它允许自动作答。
+    // 判据（从严到宽）：
+    //   ① 考试页一律不是；
+    //   ② 命中随堂测验容器（LessonQuizUnit 等）→ 是，最可靠；
+    //   ③ URL 明确是单元测验/作业，又没看到随堂测验容器 → 不是；
+    //   ④ 必须落在学习内容页（/content/{id} 或老 hash 路由）且有可见题块。
+    // 单元测验、作业、考试都是独立页面，靠 ③④ 挡掉。
+    function isLessonQuizPage() {
+        if (PAGE_CONFIG.examUrl.test(location.href)) return false;
+        if (isSpocCourse()) return spocInLessonPage() && hasVisibleQuestionBlocks();
+        if (lqScope()) return true;
+        if (PAGE_CONFIG.quizUrl.test(location.href)) return false;
+        if (!inLessonContentPage()) return false;
+        return hasVisibleQuestionBlocks();
+    }
+
+    // 是否停在某个课件内容页——随堂测验一定嵌在这里面。
+    // 关键：不能只看 URL。icourse163 的老版 hash 路由把单元测验、作业、已交卷的
+    // 答案解析都挂在 #/learn/content 下，只看地址会把单元测验当成随堂测验。
+    // 所以主判据是「有内容标签栏」（随堂测验本身就是内容条里的一个 tab），
+    // 独立页面的单元测验/作业没有这根条。
+    function inLessonContentPage() {
+        var tabs = [];
+        try { tabs = contentTabs() || []; } catch (e) { /* ignore */ }
+        if (tabs.length > 0) return true;
+        if (document.querySelector('.unitslist, .learn-unit-tabs-scroll')) return true;
+        // 路径兜底：新版内容页，且 URL 不是单元测验/作业路由
+        if (!PAGE_CONFIG.quizUrl.test(location.href) && /\/content\/\d+/.test(location.pathname)) return true;
+        return false;
     }
 
     // ===================== 自动学习（新版学习页） =====================
@@ -3075,7 +3130,8 @@
     //   讨论：自动回复（复用课堂讨论逻辑）；
     //   视频中弹出的题目：自动作答（正确与否不保证）——
     //         答对平台放行、视频自动继续；答错则等待用户手动点击播放后继续；
-    //   独立测验：只停留片刻不自动作答（避免消耗答题次数）。
+    //   随堂测验：自动作答并提交，提交后停留 10 秒再进下一个内容；
+    //   单元测验/作业/考试：独立页面，一律不作答，只短暂停留后跳过。
     // 目录解析失败时退化为按 id±1 相邻导航，并用章节标题判断边界。
     // 新版路径路由跳转 = 整页刷新，靠 localStorage 续跑状态跨页续跑。
 
@@ -4058,32 +4114,47 @@
 
     // —— 跳转三级逻辑 ——
 
-    // 判断内容标签是不是「测验」（按 aria-label / 文本关键词，命中即视为测验）
+    // 判断内容标签是不是「题目类」内容（随堂测验/自测/小测）
     function tabIsQuiz(tab) {
         var label = (tab.getAttribute && (tab.getAttribute('aria-label') || '')) || '';
         var txt = cleanText((tab.textContent || '')).slice(0, 30);
         return /测验|测试|考试|自测|小测|quiz/i.test(label) || /测验|测试|考试|自测|小测|quiz/i.test(txt);
     }
 
-    // 从当前标签向后找「下一个非测验」的内容标签（跳过测验，满足“测验连进入都不要进入”）
-    function nextTabSkipQuiz(fromTab) {
+    // 单元测验 / 单元作业 / 考试：这类标签一律不进。
+    // 它们和随堂测验长得像，但通常只有一次机会，进去被自动点了选项就收不回来。
+    // 注意「考试」二字——小节内容条里不会出现，所以按字面排除是安全的。
+    function tabIsExamLike(tab) {
+        var label = (tab.getAttribute && (tab.getAttribute('aria-label') || '')) || '';
+        var txt = cleanText((tab.textContent || '')).slice(0, 30);
+        var s = label + ' ' + txt;
+        return /单元测验|单元测试|单元作业|单元检测|考试|期中|期末|结课|补考/.test(s);
+    }
+
+    // 从当前标签向后找「下一个内容标签」。
+    // 随堂测验也照进不误——自动学习会在里面作答并提交，然后停留 10 秒再走。
+    // 只有单元测验/作业/考试这类才跳过。
+    function nextTabInLesson(fromTab) {
         var s = fromTab, skipped = [];
         while (s) {
             s = s.nextElementSibling;
             if (!s) return null;
             if (s.getAttribute && s.getAttribute('role') === 'tab' && isVisible(s)) {
-                if (tabIsQuiz(s)) { skipped.push(cleanText((s.textContent || '')).slice(0, 12)); continue; } // 跳过测验标签
-                if (skipped.length) logDebug('nav', '同小节内跳过测验标签：' + skipped.join('、'));
+                if (tabIsExamLike(s)) { skipped.push(cleanText((s.textContent || '')).slice(0, 12)); continue; }
+                if (skipped.length) logDebug('nav', '同小节内跳过单元测验/考试类标签：' + skipped.join('、'));
+                if (tabIsQuiz(s)) logDebug('nav', '同小节下一个内容＝随堂测验「' + cleanText((s.textContent || '')).slice(0, 12) + '」，自动学习会作答并提交');
                 return s;
             }
         }
         return null;
     }
 
-    // 标签列表里第一个非测验的（跨小节/章节后自动点它）
-    function firstNonQuizTab(tabs) {
-        for (var i = 0; i < tabs.length; i++) {
-            if (!tabIsQuiz(tabs[i])) return tabs[i];
+    // 标签列表里第一个可进入的内容标签（跨小节/章节后自动点它）
+    function firstTabInLesson(tabs) {
+        var i, t;
+        for (i = 0; i < tabs.length; i++) {
+            t = tabs[i];
+            if (t && !tabIsExamLike(t)) return t;
         }
         return null;
     }
@@ -4148,7 +4219,7 @@
         return next;
     }
 
-    // 执行跨小节：点击小节选项 → 等新 tablist → 点第一个非测验内容标签
+    // 执行跨小节：点击小节选项 → 等新 tablist → 点第一个内容标签（随堂测验也进）
     // 兜底：点击的是分组标题（第一节/第二节）且平台不响应（tablist 未刷新）时，
     // 自动改点该分组标题后面的第一个内容单元，保证不会卡在“节标题被跳过/无反应”。
     async function doSectionJump(item) {
@@ -4175,13 +4246,13 @@
             }
         }
         if (!tabs || tabs.length === 0) return false;
-        var first = firstNonQuizTab(tabs) || tabs[0];
+        var first = firstTabInLesson(tabs) || tabs[0];
         realClick(first);
         await waitForTabActive(first);
         return true;
     }
 
-    // 执行跨章节：点击章节选项 → 等新 tablist（必要时先点第一个小节）→ 点第一个非测验内容标签
+    // 执行跨章节：点击章节选项 → 等新 tablist（必要时先点第一个小节）→ 点第一个内容标签（随堂测验也进）
     async function doChapterJump(item) {
         var oldTab = currentContentTab();
         clickMenuItem(item);
@@ -4197,7 +4268,7 @@
             tabs = await waitForTablistRefresh(oldTab);
         }
         if (!tabs || tabs.length === 0) return false;
-        var first = firstNonQuizTab(tabs) || tabs[0];
+        var first = firstTabInLesson(tabs) || tabs[0];
         realClick(first);
         await waitForTabActive(first);
         return true;
@@ -4228,8 +4299,8 @@
             if (!curTab) { logDebug('nav', '❌ 5 秒后仍无激活 tab'); updateStatus('❌ 未找到当前内容标签，无法跳转'); return false; }
         }
         logDebug('nav', 'goNext 入口：当前激活 tab=「' + (curTab.getAttribute('aria-label') || cleanText(curTab.textContent).slice(0, 20)) + '」');
-        // 优先级 1：同小节内 —— 向后找下一个「非测验」内容标签
-        var target = nextTabSkipQuiz(curTab);
+        // 优先级 1：同小节内 —— 向后找下一个内容标签（随堂测验也进）
+        var target = nextTabInLesson(curTab);
         if (target) {
             realClick(target);
             updateStatus('➡️ 同小节：进入下一个内容');
@@ -4346,16 +4417,30 @@
         } else if (type === 'doc') {
             done = await learnDocItem();
         } else if (type === 'quiz') {
-            // MOOC：导航时已尽量跳过测验；万一进来了也直接跳过，绝不停留作答。
-            // SPOC：小节的「测试」就是随堂测验，跳过去没人会回来做，所以这里直接作答提交。
-            if (isSpocCourse() && CONFIG.LEARN_AUTO_QUIZ_SPOC) {
-                logDebug('learn', 'SPOC 随堂测验：自动作答并提交');
-                updateStatus('📝 SPOC 随堂测验：自动作答并提交...');
-                await completeLessonQuiz();
+            // 随堂测验（小节内容条里那个「测试」标签，MOOC / SPOC 都有）：
+            // 自动作答并提交，提交后停留 10 秒再进下一个内容。
+            // 单元测验/作业/考试是独立页——isLessonQuizPage() 会判掉，绝不动手。
+            if (CONFIG.LEARN_AUTO_QUIZ && isLessonQuizPage()) {
+                logDebug('learn', 'quiz：随堂测验，自动作答并提交');
+                updateStatus('📝 随堂测验：自动作答并提交...');
+                var qr = await completeLessonQuiz();
+                var waitMs = CONFIG.LEARN_QUIZ_AFTER_MS;
+                if (qr && qr.submitted) {
+                    logDebug('learn', 'quiz：已提交' + (qr.filled ? '（' + qr.filled + ' 题）' : '') + '，停留 ' + waitMs + 'ms 再跳转');
+                    updateStatus('✅ 随堂测验已提交' + (qr.filled ? '（' + qr.filled + ' 题）' : '')
+                        + '，停留 ' + Math.round(waitMs / 1000) + ' 秒后进入下一个内容（可点右下角【下一节】提前跳）...');
+                } else {
+                    logDebug('learn', 'quiz：未自动提交（' + lqResultText(qr) + '），仍停留 ' + waitMs + 'ms 后跳转');
+                    updateStatus('⚠️ 随堂测验未自动提交（' + lqResultText(qr) + '），停留 '
+                        + Math.round(waitMs / 1000) + ' 秒后进入下一个内容（可点右下角【下一节】提前跳）...');
+                }
+                await sleepWhile(waitMs, function () { return manualWaitFlag; });
                 done = true;
             } else {
-                logDebug('learn', 'quiz：测验内容直接跳过不进入');
-                updateStatus('⏭ 测验内容：跳过（不进入作答），直接进入下一个内容...');
+                // 单元测验/作业/考试，或用户关掉了 LEARN_AUTO_QUIZ：只短暂停留，不作答
+                logDebug('learn', 'quiz：不是随堂测验（单元测验/作业/考试页），不作答，跳过');
+                updateStatus('⏭ 非随堂测验内容：不作答，直接进入下一个内容...');
+                await sleep(CONFIG.LEARN_QUIZ_VISIT_MS);
                 done = true;
             }
         } else if (type === 'discussion') {
