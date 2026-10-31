@@ -2,11 +2,11 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Platform](https://img.shields.io/badge/Platform-Tampermonkey-blue)
-![Version](https://img.shields.io/badge/Version-1.10.0-green)
+![Version](https://img.shields.io/badge/Version-1.11.0-green)
 ![当日下载量](https://img.shields.io/greasyfork/dd/595205)
 ![总下载量](https://img.shields.io/greasyfork/dt/595205)
 
-面向中国大学 MOOC（icourse163.org）的 Tampermonkey 用户脚本，覆盖四大场景：**互评作业自动化、课堂讨论自动回复、随堂测验一键作答、整章自动学习**（视频 / 文档 / 测验 / 讨论全类型自动推进），并提供开发者调试日志与页面结构诊断，便于适配新版 UI。
+面向中国大学 MOOC / SPOC（icourse163.org）的 Tampermonkey 用户脚本，自动识别两类课程并走对应前端分支，覆盖四大场景：**互评作业自动化、课堂讨论自动回复、随堂测验一键作答、整章自动学习**（视频 / 文档 / 测验 / 讨论全类型自动推进），并提供开发者调试日志与页面结构诊断，便于适配新版 UI。
 
 > 脚本依赖平台 DOM 结构，随慕课新版 UI 持续维护。页面改版后可先用「页面 DOM 诊断」导出结构，反馈给作者精准适配。
 
@@ -19,7 +19,8 @@
 | **互评** | 一键互评 / 快速互评 / 全自动互评 / 评分修复；自动避开测验·作业·考试答题页 |
 | **讨论** | 预览回复内容 / 一键回复当前讨论；正文取已有楼层，同一条讨论只回复一次 |
 | **随堂测验** | 一键完成并提交：从课件接口取正确答案→逐题填涂→自动提交；只在随堂测验下生效 |
-| **自动学习** | 从当前内容开始整章自动推进：视频播完→文档翻页→讨论回复→富文本停留，测验直接跳过 |
+| **自动学习** | 从当前内容开始整章自动推进：视频播完→文档翻页→讨论回复→富文本停留；MOOC 测验跳过、SPOC 随堂测验自动作答 |
+| **课程类型** | 自动识别 MOOC / SPOC 两套前端（导航、题块、题库来源各不相同），互不干扰 |
 | **日志** | 开发者调试日志：检测结果、跳转决策、异常捕获，可复制可清空 |
 | **工具** | 页面 DOM 诊断、解除复制限制 |
 
@@ -44,6 +45,36 @@
 
 ---
 
+## 课程类型适配（MOOC / SPOC）
+
+平台上有两类课程，前端是两套东西，脚本会先识别课程类型再走对应分支。识别优先看路径（`/spoc/` → SPOC，`/mooc/` → MOOC），路径判断不了才看 DOM（只认 SPOC 独有的 `.up.j-up` 下拉），**宁可漏判 SPOC，也不把 MOOC 带进 SPOC 分支**。
+
+| 维度 | MOOC（新版） | SPOC |
+|---|---|---|
+| 路径 | `/mooc/learn/{课程}/content/{id}` | `/spoc/learn/{课程}/…` |
+| 内容项 | `[role="tablist"]` 里的 `[role="tab"]` | `.unitslist > .f-fl`（`.current` 为当前项） |
+| 章节 / 小节 | `header button[aria-expanded]` | `.up.j-up`（`[0]` 章、`[1]` 节）+ `.down.j-list` 里的 `.list` |
+| 随堂测验题块 | `LessonQuizUnit` 容器 + `article` | `.m-choiceQuestion` |
+| 提交 / 重做 | 文字「提交」/「重新答题」 | `.j-submit` / `.j-replay`（文字「重做」） |
+| 题库来源 | `front-mooc-learn/api/…/unit-page` → `result.quizData` | dwr `CourseBean.getLessonUnitLearnVo` → `paper.objectiveQList` |
+| 讨论区 | `mooc-comment*` + `contenteditable` | `.m-data-lists` / `.f-richEditorText` / `.ql-editor` |
+
+### 各功能在两类课程下的表现
+
+| 功能 | MOOC | SPOC |
+|---|---|---|
+| 互评 | ✅ | ⚠️ 依赖页面列表结构，识别不到会明确提示而不是乱点 |
+| 讨论自动回复 | ✅ | ✅ 编辑器走 `.ql-editor`，发布按钮走 `.j-edit-btn`，回复正文取自 `.f-richEditorText` |
+| 随堂测验一键完成 | ✅ 走接口 | ✅ 走 dwr，取不到时提示切一次标签再试 |
+| 自动学习 | ✅ tablist + 下拉 | ✅ `.unitslist` + `.up.j-up` 下拉；测验会**自动作答**而不是跳过（见下） |
+
+### SPOC 的两个特别处理
+
+- **测验不跳过**：SPOC 小节的「测试」就是随堂测验（不限次数），跳过去没人会回来做，所以自动学习走到测试标签时会自动作答并提交。想让 SPOC 也跳过，把脚本里的 `CONFIG.LEARN_AUTO_QUIZ_SPOC` 改成 `false`。
+- **dwr 答案靠 hook 捕获**：SPOC 的题目和答案在 `getLessonUnitLearnVo.dwr` 的响应里。脚本注入时首屏那条请求已经发完，所以会挂上 dwr 回调 hook 等下一次；还没等到就把当前内容重新点一次逼平台再请求一回。仍失败时会把「请切到别的测试再切回来」写进状态栏——切换一次内容即可让 hook 收到数据。
+
+---
+
 ## 随堂测验一键完成
 
 「自动学习」页签里的**随堂测验：一键完成并提交**，只在**随堂测验**（小节里那个叫「测试」的标签，和视频 / 文档 / 讨论同一层）页面上生效。
@@ -56,9 +87,16 @@
 | 次数 | 通常不限次数，可反复重做 | 往往只有一次机会 |
 | 本功能 | ✅ 支持 | ❌ 不处理（考试页也会直接拒绝） |
 
-流程：重新答题（若已答过）→ 从课件接口取正确答案 → 逐题比对填涂 → 点提交 → 处理「确定提交」弹窗。
+流程：重新答题（若已答过）→ 取正确答案 → 逐题比对填涂 → 点提交 → 处理「确定提交」弹窗。
 
-答案从哪来：站点自己的课件接口 `front-mooc-learn/api/learn/content/unit-page`，返回的 `result.quizData.questions` 里每题带 `options[{id,label}]` 与 `correctOptionIds`。把 `correctOptionIds` 映射回 `options[].label` 就是正确选项文案，再拿文案匹配页面上每个 label 的文字。
+答案从哪来（两类课程走不同来源）：
+
+| 课程 | 来源 |
+|---|---|
+| MOOC | 课件接口 `front-mooc-learn/api/learn/content/unit-page`，`result.quizData.questions` 每题带 `options[{id,label}]` 与 `correctOptionIds` |
+| SPOC | dwr `getLessonUnitLearnVo` 的 `paper.objectiveQList`，选项上直接带 `answer` 标记 |
+
+映射方式：把正确答案的 ID 映射回对应选项文案，再拿文案匹配页面上每个 label 的文字。
 
 安全约束（和互评、讨论同一套原则）：
 
@@ -83,7 +121,7 @@
 | **视频中弹出题目** | 自动作答——只求「让平台放行继续播放」：答对自动继续；答错视频停住时，请手动点一下播放按钮，脚本会继续监控（上限 10 分钟） |
 | **文档 / 课件 / PPT** | 自动翻页，每页停留约 1 秒，翻到底自动进入下一内容 |
 | **富文本 / 节标题页** | 停留 10 秒后自动跳转（可随时点右下角【下一节】提前跳） |
-| **测验** | 连进入都不进入：导航时直接跳过测验，跳转到它的下一个内容 |
+| **测验** | MOOC：连进入都不进入，导航时直接跳过；SPOC：随堂测验自动作答并提交（`LEARN_AUTO_QUIZ_SPOC` 可关） |
 | **讨论** | 自动回复（与「讨论」页签同一套逻辑与安全约束） |
 | **加载失败页** | 快速跳过，不停留 |
 
@@ -183,11 +221,14 @@
 - 建议先小范围测试，确认课程页面结构正常再批量执行。
 - 脚本依赖慕课新版 UI 的 DOM 结构（顶部章节/小节下拉、内容标签栏 `role="tablist"` 等），平台改版后优先用「页面 DOM 诊断」导出结构再反馈问题。
 - 视频中弹题答错时**必须手动点击播放**才能继续，这是平台的强制校验，脚本无法绕过。
+- SPOC 的随堂测验答案来自 dwr 响应，脚本注入时首屏请求已过。若提示「没拿到 dwr 试题数据」，手动切到别的「测试」标签再切回来即可（切换会触发新请求，hook 已在监听了）。
+- 互评功能对 SPOC 课程只做页面结构识别，识别不到会直接提示「未检测到互评列表」而不是乱点。
 
 ## 近期版本记录
 
 | 版本 | 要点 |
 |---|---|
+| 1.11.0 | 新增 SPOC 兼容：课程类型识别、`.unitslist`/`.up.j-up` 导航、`.m-choiceQuestion` 题块、dwr 取答案、`.ql-editor` 讨论编辑器；MOOC 路径完全不变 |
 | 1.10.0 | 新增「随堂测验一键完成」：接口取正确答案→逐题填涂→自动提交；答案不可得或题目对不上时只填不交 |
 | 1.9.11 | 修复「下一节」触发崩溃（日志埋点读取未初始化数组长度） |
 | 1.9.10 | 新增开发者日志页签与全流程埋点 |

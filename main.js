@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.10.0
-// @description  中国大学MOOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI，含页面DOM诊断）；随堂测验一键作答并提交（从课件接口取正确答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击；测验自动跳过、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。
+// @version      1.11.0
+// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；测验自动跳过、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=icourse163.org
@@ -54,6 +54,11 @@
         LEARN_IDLE_POLL: 600,           // 视频监控轮询间隔（毫秒）
         LEARN_MAX_PAGE_FLIPS: 600,      // 单个文档最多翻多少页（保险上限）
         LEARN_MAX_ITEMS: 200,           // 单章最多处理多少内容（保险上限）
+
+        // ---- SPOC 兼容 ----
+        // SPOC 小节的「测试」就是随堂测验（不限次数），自动学习时直接作答提交；
+        // MOOC 仍维持原有行为（测验跳过），把这里改 false 可让 SPOC 也跳过。
+        LEARN_AUTO_QUIZ_SPOC: true,
     };
 
     var LIST_CONFIG = {
@@ -869,6 +874,8 @@
             // 新版 UI（mooc- 前缀，BEM 命名）
             '[class*="mooc-comment"]', '[class*="mooc-discuss"]', '[class*="mooc-reply"]',
             '[class*="mooc-comment__list"]', '[class*="mooc-discuss__list"]', '[class*="mooc-reply__list"]',
+            // SPOC（.m-data-lists 下每个直接子 div 是一条回复）
+            '.m-data-lists', '[class*="m-data-lists"]',
         ],
 
         // 容器之内的楼层节点
@@ -883,6 +890,8 @@
             // 新版 UI
             '[class*="mooc-comment__item"]', '[class*="mooc-discuss__item"]', '[class*="mooc-reply__item"]',
             '[class*="mooc-comment-item"]', '[class*="mooc-discuss-item"]', '[class*="mooc-reply-item"]',
+            // SPOC：正文节点本身就是一条回复
+            '.f-richEditorText', '[class*="f-richEditorText"]',
             'li', '.item',
         ],
 
@@ -899,6 +908,8 @@
             // 新版 UI
             '[class*="mooc-comment__content"]', '[class*="mooc-discuss__content"]', '[class*="mooc-reply__content"]',
             '[class*="mooc-comment__text"]', '[class*="mooc-comment-content"]',
+            // SPOC：富文本正文
+            '.f-richEditorText', '[class*="f-richEditorText"]',
             'p',
         ],
 
@@ -1254,6 +1265,12 @@
     // 顺序很重要：页面上可能有搜索框、笔记框等其它可编辑区，
     // 直接全页扫第一个输入框会写错地方。
     function findReplyEditor() {
+        // SPOC 的编辑器是 Quill（.ql-editor）。先认它，省得在整页 contenteditable
+        // 里摸到搜索框之类的东西
+        if (isSpocCourse()) {
+            var ql = document.querySelector('.ql-editor');
+            if (ql && isEditable(ql) && isEmptyEditor(ql)) return ql;
+        }
         var scopes = collectCandidates(document, DISCUSS.editorScopeSelectors, 40);
         var i, found;
         for (i = 0; i < scopes.length; i++) {
@@ -1293,6 +1310,11 @@
     // 发布按钮。从编辑器往上爬若干层先找（发布按钮多半和输入框同属一个表单），
     // 全页兜底时跳过「落在某个楼层里」的按钮——那通常是楼层自己的「回复」小链接。
     function findSubmitButton(editor, items) {
+        // SPOC 的发布按钮是 .j-edit-btn / .editbtn，文字不一定是「发布」
+        if (isSpocCourse()) {
+            var spocBtn = document.querySelector('.j-edit-btn, .editbtn');
+            if (spocBtn && isVisible(spocBtn) && !spocBtn.disabled) return spocBtn;
+        }
         var scope = editor, up = 0;
         while (scope && up < 6) {
             var btn = findButtonIn(scope);
@@ -1906,11 +1928,11 @@
             '      <button id="mar-learn-probe" class="mar-btn">页面 DOM 诊断</button>',
             '      <div class="mar-field">',
             '        <span class="mar-label">随堂测验说明</span>',
-            '        <span class="mar-hint">只在随堂测验（小节里那个「测试」标签）下可用：从课件接口取正确答案→逐题填涂→自动提交。读不到答案就一个选项都不点；有题目匹配不上时只填不交，留给你手动补完。</span>',
+            '        <span class="mar-hint">只在随堂测验（小节里那个「测试」标签）下可用：取正确答案（MOOC 走课件接口、SPOC 走 dwr）→逐题填涂→自动提交。读不到答案就一个选项都不点；有题目匹配不上时只填不交，留给你手动补完。</span>',
             '      </div>',
             '      <div class="mar-field">',
             '        <span class="mar-label">自动学习说明</span>',
-            '        <span class="mar-hint">从当前章第一个内容开始：视频从头播放→看完进入下一个内容（测验/文档/讨论等，不是下一个视频）；文档每页 1 秒自动翻页；讨论自动回复；视频中弹出的题目自动作答（答对自动继续，答错请手动点击播放）。</span>',
+            '        <span class="mar-hint">从当前章第一个内容开始：视频从头播放→看完进入下一个内容（测验/文档/讨论等，不是下一个视频）；文档每页 1 秒自动翻页；讨论自动回复；视频中弹出的题目自动作答（答对自动继续，答错请手动点击播放）。MOOC 的测验跳过不进入；SPOC 的随堂测验会自动作答提交。</span>',
             '      </div>',
             '    </div>',
             '    <div class="mar-pane" data-pane="log">',
@@ -2077,6 +2099,349 @@
         setButtonsRunning(false);
     }
 
+    // ===================== 课程类型：MOOC / SPOC =====================
+    // 两类课程共用 www.icourse163.org，但前端是两套东西：
+    //
+    //            MOOC（新版）                              SPOC
+    //   路径      /mooc/learn/{课程}/content/{id}           /spoc/learn/{课程}/…
+    //   内容项    [role="tablist"] 里的 [role="tab"]        .unitslist > .f-fl（.current 为当前）
+    //   章节小节  header button[aria-expanded]              .up.j-up + .down.j-list 的 .list
+    //   题块      LessonQuizUnit 容器 + article             .m-choiceQuestion
+    //   提交/重做 文字「提交」/「重新答题」                   .j-submit / .j-replay（文字「重做」）
+    //   答案      front-mooc-learn/api/…/unit-page          dwr CourseBean.getLessonUnitLearnVo
+    //             → result.quizData.questions               → paper.objectiveQList
+    //   讨论      mooc-comment* + contenteditable           .m-data-lists / .f-richEditorText / .ql-editor
+    //
+    // 原则：所有 SPOC 分支都以 isSpocCourse() 为前提，MOOC 仍走原有代码路径；
+    //       SPOC 分支认不出结构时返回 null，由 MOOC 逻辑兜底，不硬点。
+    var courseUiCache = { key: '', type: '' };
+
+    function isSpocCourse() {
+        return detectCourseUi() === 'spoc';
+    }
+
+    function detectCourseUi() {
+        var key = (location.pathname || '') + (location.hash || '');
+        if (courseUiCache.key === key && courseUiCache.type) return courseUiCache.type;
+        var type = computeCourseUi();
+        courseUiCache = { key: key, type: type };
+        return type;
+    }
+
+    function computeCourseUi() {
+        var path = location.pathname || '';
+        var hash = location.hash || '';
+        // 路径最可靠：SPOC 一定挂在 /spoc/ 下，新版 MOOC 挂在 /mooc/ 下
+        if (/^\/spoc\//.test(path) || /^\/spoc\//.test(hash)) return 'spoc';
+        if (/^\/mooc\//.test(path)) return 'mooc';
+        // 老式 /learn/ 路由、互评页等：只认 SPOC 独有的 .up.j-up 下拉，
+        // 其余一律按 MOOC 处理——宁可漏判 SPOC，也不能把 MOOC 页面带进 SPOC 分支
+        try {
+            if (document.querySelector('.up.j-up')) return 'spoc';
+        } catch (e) { /* ignore */ }
+        return 'mooc';
+    }
+
+    function courseUiLabel() {
+        return detectCourseUi() === 'spoc' ? 'SPOC' : 'MOOC';
+    }
+
+    // —— SPOC 结构选择器 ——
+    var SPOC = {
+        unitItem: ['.unitslist > .f-fl', '.unitslist > [class*="item"]', '[class*="unitslist"] > .f-fl'],
+        quizBlock: ['.m-choiceQuestion', '.j-questionItem'],
+        navWait: 2500,
+    };
+
+    // 当前小节里的内容项（视频/文档/讨论/测试），按页面顺序
+    function spocUnitItems() {
+        for (var s = 0; s < SPOC.unitItem.length; s++) {
+            var els;
+            try { els = document.querySelectorAll(SPOC.unitItem[s]); } catch (e) { continue; }
+            var vis = [];
+            for (var i = 0; i < els.length; i++) {
+                if (isVisible(els[i])) vis.push(els[i]);
+            }
+            if (vis.length > 0) return vis;
+        }
+        return [];
+    }
+
+    function spocCurrentIndex(items) {
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].classList && items[i].classList.contains('current')) return i;
+        }
+        return -1;
+    }
+
+    // 当前页面是否在小节内容页（有内容条 / 内容标签栏）。单元测验、作业是独立页，没有这些。
+    function spocInLessonPage() {
+        try {
+            return !!(document.querySelector('.unitslist, .learn-unit-tabs-scroll, [role="tablist"]'));
+        } catch (e) { return false; }
+    }
+
+    // 等「当前项」移到目标项。SPOC 切内容是 dwr 局部刷新，不换页也不换 hash，
+    // 所以只能盯 .current 的移动来判断是否切换成功。
+    async function spocWaitCurrent(expectText) {
+        var want = cleanText(expectText);
+        var t0 = Date.now();
+        while (Date.now() - t0 < CONFIG.LEARN_NAV_WAIT) {
+            if (taskState.cancelled) throw makeCancelError();
+            var items = spocUnitItems();
+            var idx = spocCurrentIndex(items);
+            if (idx !== -1 && cleanText(items[idx].textContent) === want) return true;
+            await sleep(250);
+        }
+        return false;
+    }
+
+    // 展开第 idx 个下拉（0=章节，1=小节），返回按钮与菜单项
+    async function spocOpenList(idx) {
+        var ups = document.querySelectorAll('.up.j-up');
+        if (ups.length <= idx || !isVisible(ups[idx])) return { btn: null, items: [] };
+        var btn = ups[idx];
+        realClick(btn);
+        await sleep(700);
+        var lists = document.querySelectorAll('.down.j-list');
+        if (lists.length <= idx) return { btn: btn, items: [] };
+        var items = lists[idx].querySelectorAll('.list');
+        return { btn: btn, items: Array.prototype.slice.call(items) };
+    }
+
+    // 下拉按钮的文字形如「4.2.2 依靠人民…」/「第四章 坚持以人民…」，
+    // 菜单项的 title 里含同一段编号，用首个词做匹配（和参考脚本一致）
+    function spocTitleHead(el) {
+        var t = cleanText((el && (el.textContent || (el.getAttribute ? el.getAttribute('title') : ''))) || '');
+        var m = t.match(/^\S+/);
+        return m ? m[0] : t.slice(0, 10);
+    }
+
+    function spocIndexOfList(items, btn) {
+        var head = normMatch(spocTitleHead(btn));
+        if (!head) return -1;
+        for (var i = 0; i < items.length; i++) {
+            var raw = (items[i].getAttribute && items[i].getAttribute('title')) || items[i].textContent || '';
+            if (normMatch(cleanText(raw)).indexOf(head) !== -1) return i;
+        }
+        return -1;
+    }
+
+    // 切换小节/章节后，点第一个内容项（平台通常已自动选中，已是第一项就不重复点）
+    async function spocEnterFirstItem() {
+        await sleep(800);
+        var items = spocUnitItems();
+        if (items.length === 0) return false;
+        if (spocCurrentIndex(items) === 0) return true;
+        var first = items[0];
+        var want = cleanText(first.textContent);
+        realClick(first);
+        return await spocWaitCurrent(want);
+    }
+
+    // SPOC 的“下一项”：同小节下一项 → 下一小节第一项 → 下一章第一项 → 结束
+    // 返回 true=已移动 / false=确实到课程末尾 / null=结构没认出来（交给 MOOC 逻辑兜底）
+    async function spocGoNext() {
+        var items = spocUnitItems();
+        if (items.length === 0) { logDebug('nav', 'SPOC：没找到 .unitslist 内容项'); return null; }
+        var cur = spocCurrentIndex(items);
+        if (cur === -1) { logDebug('nav', 'SPOC：内容项里没有 .current 标记'); return null; }
+        logDebug('nav', 'SPOC：当前第 ' + (cur + 1) + '/' + items.length + ' 项＝「' + cleanText(items[cur].textContent).slice(0, 20) + '」');
+
+        // 1) 同小节下一项
+        if (cur + 1 < items.length) {
+            var next = items[cur + 1];
+            var nextText = cleanText(next.textContent);
+            realClick(next);
+            updateStatus('➡️ SPOC：进入本节下一个内容');
+            var moved = await spocWaitCurrent(nextText);
+            logDebug('nav', 'SPOC 同小节 →「' + nextText.slice(0, 20) + '」' + (moved ? '成功' : '⚠️ 当前项未变化'));
+            return moved;
+        }
+
+        // 2) 跨小节
+        var sec = await spocOpenList(1);
+        if (!sec.btn) { logDebug('nav', 'SPOC：没找到小节下拉按钮'); return null; }
+        var secIdx = spocIndexOfList(sec.items, sec.btn);
+        logDebug('nav', 'SPOC 小节下拉：' + sec.items.length + ' 项，当前索引=' + secIdx);
+        if (secIdx === -1) return null;
+        if (secIdx + 1 < sec.items.length) {
+            var secText = cleanText(sec.items[secIdx + 1].textContent);
+            logDebug('nav', 'SPOC 跨小节目标＝「' + secText.slice(0, 24) + '」');
+            realClick(sec.items[secIdx + 1]);
+            updateStatus('📚 SPOC：进入下一小节，自动播放第一个内容...');
+            await sleep(1200);
+            return await spocEnterFirstItem();
+        }
+
+        // 3) 跨章节
+        var chap = await spocOpenList(0);
+        if (!chap.btn) { logDebug('nav', 'SPOC：没找到章节下拉按钮'); return null; }
+        var chapIdx = spocIndexOfList(chap.items, chap.btn);
+        logDebug('nav', 'SPOC 章节下拉：' + chap.items.length + ' 项，当前索引=' + chapIdx);
+        if (chapIdx === -1) return null;
+        if (chapIdx + 1 >= chap.items.length) { logDebug('nav', 'SPOC：章节已是最后一个 → 课程学完'); return false; }
+        logDebug('nav', 'SPOC 跨章节目标＝「' + cleanText(chap.items[chapIdx + 1].textContent).slice(0, 24) + '」');
+        realClick(chap.items[chapIdx + 1]);
+        updateStatus('📕 SPOC：进入下一章，自动播放第一个内容...');
+        await sleep(1500);
+        // 新章节未必自动选中第一节，点第一节兜底
+        var sec2 = await spocOpenList(1);
+        if (sec2.items.length > 0) {
+            realClick(sec2.items[0]);
+            await sleep(1200);
+        }
+        return await spocEnterFirstItem();
+    }
+
+    // SPOC 内容类型判定。认不出来返回 null，交给通用判定。
+    function spocActiveTabText() {
+        var box = document.querySelector('.learn-unit-tabs-scroll');
+        var scope = box || document;
+        var btns = scope.querySelectorAll('button, [role="tab"]');
+        for (var i = 0; i < btns.length; i++) {
+            var cls = typeof btns[i].className === 'string' ? btns[i].className : '';
+            var active = (btns[i].getAttribute && btns[i].getAttribute('aria-selected') === 'true')
+                || /\bcurrent\b/.test(cls) || /text-\[#00cc7e\]/i.test(cls);
+            if (!active) continue;
+            var t = cleanText(btns[i].textContent || (btns[i].getAttribute && btns[i].getAttribute('aria-label')) || '');
+            if (t) return t;
+        }
+        return '';
+    }
+
+    function spocDetectContentType() {
+        if (hasVisibleQuestionBlocks()) {
+            logDebug('type', 'SPOC：检测到可见题块 → quiz');
+            return 'quiz';
+        }
+        if (document.querySelector('.m-data-lists, .ql-editor, .f-richEditorText')) {
+            logDebug('type', 'SPOC：检测到讨论区结构 → discussion');
+            return 'discussion';
+        }
+        if (findVideo()) { logDebug('type', 'SPOC：检测到 video 元素 → video'); return 'video'; }
+        if (findDocViewer()) { logDebug('type', 'SPOC：检测到文档查看器 → doc'); return 'doc'; }
+        // 最后看标签栏激活项的文字（测试/讨论/视频/课件）
+        var tab = spocActiveTabText();
+        if (tab) {
+            logDebug('type', 'SPOC：标签栏激活项＝「' + tab.slice(0, 12) + '」');
+            if (/测试|测验|考试/.test(tab)) return 'quiz';
+            if (/讨论/.test(tab)) return 'discussion';
+            if (/视频/.test(tab)) return 'video';
+            if (/课件|文档|图文|PPT/i.test(tab)) return 'doc';
+        }
+        logDebug('type', 'SPOC：DOM 特征没认出来，退回通用判定');
+        return null;
+    }
+
+    // —— SPOC 随堂测验的答案来源：dwr ——
+    // 页面里那条 getLessonUnitLearnVo.dwr 请求的返回体带 data.paper.objectiveQList，
+    // 每题有 plainTextTitle / type / optionDtos[{id,answer}] / correctAnswer。
+    // 脚本是 document-idle 注入的，首屏那条请求早已发完，所以：
+    //   ① 先挂 hook 等下一次回调（切换内容必然触发一次）；
+    //   ② 还没等到，就把当前内容重新点一次，逼平台再请求一回。
+    var SPOC_DWR = { paper: null, hooked: false, patched: false, sawRequest: false };
+
+    function spocHookDwr() {
+        if (SPOC_DWR.hooked) return;
+        SPOC_DWR.hooked = true;
+        try {
+            var realOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function (method, url) {
+                try {
+                    if (typeof url === 'string' && url.indexOf('getLessonUnitLearnVo') !== -1) SPOC_DWR.sawRequest = true;
+                } catch (e) { /* ignore */ }
+                return realOpen.apply(this, arguments);
+            };
+            logDebug('quiz', 'SPOC：XHR 已挂钩（仅用于观测 dwr 请求）');
+        } catch (e) {
+            logDebug('quiz', 'SPOC：XHR 挂钩失败 ' + (e && e.message));
+        }
+        spocPatchDwrEngine(0);
+    }
+
+    // dwr 引擎回调是拿数据最稳的一手：直接给对象，不用解析文本
+    function spocPatchDwrEngine(tries) {
+        try {
+            if (window.dwr && window.dwr.engine && typeof window.dwr.engine._remoteHandleCallback === 'function') {
+                if (!SPOC_DWR.patched) {
+                    var orig = window.dwr.engine._remoteHandleCallback;
+                    window.dwr.engine._remoteHandleCallback = function (id, idx, data) {
+                        try {
+                            if (data && data.paper && data.paper.objectiveQList && data.paper.objectiveQList.length) {
+                                SPOC_DWR.paper = data.paper;
+                                logDebug('quiz', 'SPOC：已捕获 dwr paper（' + data.paper.objectiveQList.length + ' 题）');
+                            }
+                        } catch (e) { /* ignore */ }
+                        return orig.apply(this, arguments);
+                    };
+                    SPOC_DWR.patched = true;
+                    logDebug('quiz', 'SPOC：dwr 引擎回调已挂钩');
+                }
+                return;
+            }
+        } catch (e) { /* ignore */ }
+        if (tries < 20) setTimeout(function () { spocPatchDwrEngine(tries + 1); }, 300);
+    }
+
+    async function spocEnsurePaper(timeoutMs) {
+        if (SPOC_DWR.paper) return true;
+        spocHookDwr();
+        await sleep(400);
+        if (SPOC_DWR.paper) return true;
+
+        // 重新点当前内容，逼平台再发一次 dwr 请求
+        var items = spocUnitItems();
+        var cur = spocCurrentIndex(items);
+        if (cur !== -1) {
+            logDebug('quiz', 'SPOC：重新点击当前内容项以触发 dwr 请求');
+            realClick(items[cur]);
+        }
+        var t0 = Date.now();
+        while (Date.now() - t0 < timeoutMs) {
+            if (taskState.cancelled) throw makeCancelError();
+            if (SPOC_DWR.paper) return true;
+            await sleep(300);
+        }
+        return !!SPOC_DWR.paper;
+    }
+
+    function spocParsePaper(paper) {
+        var list = paper && (paper.objectiveQList || paper.questionList);
+        if (!list || !list.length) return [];
+        var out = [];
+        for (var i = 0; i < list.length; i++) {
+            var q = list[i];
+            if (!q) continue;
+            var opts = q.optionDtos || q.options || [];
+            var ids = [], labels = [];
+            for (var j = 0; j < opts.length; j++) {
+                var o = opts[j];
+                if (!o) continue;
+                if (o.answer === true || o.isAnswer === true || o.correct === true) {
+                    if (o.id !== null && o.id !== undefined) ids.push(String(o.id));
+                    labels.push(lqStripTags(o.content || o.label || o.title || ''));
+                }
+            }
+            var blanks = [];
+            if (q.correctAnswer) {
+                var segs = lqStripTags(q.correctAnswer).split('#');
+                for (var s = 0; s < segs.length; s++) {
+                    var seg = cleanText(segs[s]);
+                    if (seg) blanks.push(seg);
+                }
+            }
+            out.push({
+                type: q.type,
+                title: lqStripTags(q.plainTextTitle || q.title || ''),
+                ids: ids,
+                labels: labels,
+                blanks: blanks,
+            });
+        }
+        return out;
+    }
+
     // ===================== 随堂测验：一键完成并提交 =====================
     // 随堂测验（新版 UI 里就那个叫「测试」的 tab，组件名 LessonQuizUnit）和单元测验
     // 是两套不同的东西：
@@ -2101,9 +2466,9 @@
             '[class*="LessonQuizUnit"]', '[class*="lesson-quiz"]', '[class*="lessonQuiz"]',
             '[class*="LessonQuiz"]', '[class*="quiz-unit"]', '[class*="quizUnit"]',
         ],
-        // 单题容器
+        // 单题容器（SPOC 的随堂测验题块是 .m-choiceQuestion）
         blockSelectors: [
-            'article', 'fieldset',
+            'article', 'fieldset', '.m-choiceQuestion', '.j-questionItem',
             '[class*="questionItem"]', '[class*="question-item"]', '[class*="questionBlock"]',
         ],
         MAX_BLOCKS: 60,
@@ -2179,6 +2544,21 @@
         return null;
     }
 
+    // 同一题可能同时命中多个容器（比如 .m-choiceQuestion 里还套着 article），
+    // 只保留最内层——最内层刚好是「一题的范围」，外层可能罩着好几题。
+    // 不去重的话同一题会被当成两个题块，第二个必然匹配不上，于是永远不提交。
+    function lqKeepInnermost(list) {
+        var out = [];
+        for (var i = 0; i < list.length; i++) {
+            var hasInner = false;
+            for (var j = 0; j < list.length; j++) {
+                if (j !== i && list[i] !== list[j] && list[i].contains(list[j])) { hasInner = true; break; }
+            }
+            if (!hasInner) out.push(list[i]);
+        }
+        return out;
+    }
+
     // 页面上的题目区块。优先 article/fieldset；没有就从选项输入框往上爬，
     // 爬到「同一题的所有选项」那个容器为止。
     function lqBlocks(scope) {
@@ -2198,7 +2578,7 @@
             if (el.querySelector('.u-questionItem')) continue;
             if (out.indexOf(el) === -1) out.push(el);
         }
-        if (out.length > 0) return out;
+        if (out.length > 0) return lqKeepInnermost(out);
 
         var inputs = root.querySelectorAll(shapeSel);
         var seen = [];
@@ -2338,7 +2718,28 @@
         };
     }
 
+    // 答案获取：MOOC 走课件接口；SPOC 先试同一接口（两套前端可能共用），
+    // 拿不到再走 dwr 的 paper。
     async function lqFetchQuestions(ctx) {
+        var apiRes = await lqFetchFromApi(ctx);
+        if (apiRes.ok) return apiRes;
+        if (!isSpocCourse()) return apiRes;
+
+        logDebug('quiz', 'SPOC：接口取答案失败（' + apiRes.error + '），改走 dwr paper');
+        var got = await spocEnsurePaper(12000);
+        if (!got || !SPOC_DWR.paper) {
+            return {
+                ok: false,
+                error: 'SPOC 没拿到 dwr 试题数据（paper）：请手动切到别的「测试」再切回来，或刷新页面后重试',
+            };
+        }
+        var qs = spocParsePaper(SPOC_DWR.paper);
+        if (qs.length === 0) return { ok: false, error: 'dwr 数据里没有 objectiveQList 题目' };
+        logDebug('quiz', 'SPOC：从 dwr paper 解析到 ' + qs.length + ' 道题');
+        return { ok: true, questions: qs };
+    }
+
+    async function lqFetchFromApi(ctx) {
         if (!ctx || !ctx.courseKey || !ctx.lessonId) {
             return { ok: false, error: '地址栏里解析不到 courseKey / lessonId' };
         }
@@ -2494,6 +2895,15 @@
     }
 
     function lqFindSubmit(scope) {
+        // SPOC 的提交按钮是 .j-submit（不一定是 button，可能是 div/a）。
+        // 只在 SPOC 下走这条捷径，MOOC 仍用原来的按钮遍历，行为不变。
+        if (isSpocCourse()) {
+            var spocBtn = document.querySelector('.j-submit');
+            if (spocBtn && isVisible(spocBtn) && !spocBtn.disabled
+                && LESSON_QUIZ.SUBMIT_TEXT.test(cleanText(spocBtn.textContent || ''))) {
+                return spocBtn;
+            }
+        }
         var roots = scope ? [scope, document] : [document];
         for (var r = 0; r < roots.length; r++) {
             var els = roots[r].querySelectorAll('button, [role="button"], input[type="submit"], a');
@@ -2509,7 +2919,7 @@
     }
 
     function lqFindReAnswer() {
-        var els = document.querySelectorAll('button, a, [role="button"]');
+        var els = document.querySelectorAll('button, a, [role="button"], .j-replay');
         for (var i = 0; i < els.length; i++) {
             var el = els[i];
             if (!isVisible(el) || el.disabled) continue;
@@ -2559,6 +2969,12 @@
     async function completeLessonQuiz() {
         if (PAGE_CONFIG.examUrl.test(location.href)) {
             updateStatus('⚠️ 这是考试页，本功能不处理（考试通常只有一次机会，请手动作答）');
+            return;
+        }
+        // SPOC 下只在「小节内容页的测试标签」动手。单元测验/作业是独立页，
+        // 没有内容条和内容标签栏——在那种页面上作答等于替人考试，直接拒绝。
+        if (isSpocCourse() && !spocInLessonPage()) {
+            updateStatus('⚠️ SPOC：这不像小节内容页（可能是单元测验/作业/考试），本功能只处理随堂测验');
             return;
         }
 
@@ -3056,6 +3472,8 @@
             '[class*="course-doc"]', '[class*="courseDoc"]', '[class*="docContent"]', '[class*="doc-content"]',
             '[class*="docPage"]', '[class*="doc-page"]', '[class*="slidePage"]', '[class*="slide-page"]',
             '[class*="attachmentPage"]', '[class*="attachment-page"]',
+            // SPOC 课件
+            '.m-doc', '[class*="m-doc"]', '[class*="courseware"]', '[class*="pptPlayer"]',
         ];
         for (var s = 0; s < sels.length; s++) {
             var els;
@@ -3348,6 +3766,11 @@
         // 课件加载失败页（unitId 与 lessonId 不匹配等）→ 快速跳过，不停留
         var bodyHead = cleanText((document.body ? document.body.textContent : '') || '').slice(0, 300);
         if (/课件不存在|课件加载失败|unitId[\s\S]{0,20}不匹配|lessonId[\s\S]{0,20}不匹配|内容不存在|资源不存在/.test(bodyHead)) { logDebug('type', 'missing：页面显示课件不存在/unitId不匹配类文案'); return 'missing'; }
+        // SPOC 老式 DOM 与 MOOC 新版完全不同，先走 SPOC 判定；认不出来再走通用判定
+        if (isSpocCourse()) {
+            var spocType = spocDetectContentType();
+            if (spocType) return spocType;
+        }
         if (PAGE_CONFIG.quizUrl.test(href) || hasVisibleQuestionBlocks()) { logDebug('type', 'quiz：URL 命中测验路由或检测到题目块'); return 'quiz'; }
         if (looksLikeDiscussionPage()) { logDebug('type', 'discussion：讨论页特征命中'); return 'discussion'; }
         if (findVideo()) { logDebug('type', 'video：检测到可见 video 元素'); return 'video'; }
@@ -3784,6 +4207,19 @@
     // 关键修复：跨小节必须先确认「小节下拉里确实有下一项」才执行；
     // 只有确认当前小节是最后一项，才会进入跨章节——从根上杜绝“节没学完就跳章”。
     async function goNext() {
+        // SPOC：内容是 .unitslist 的一条条 .f-fl，章节/小节是 .up.j-up 下拉，
+        // 与 MOOC 的 tablist 完全两套。先走 SPOC；它认不出结构时返回 null 再兜底。
+        if (isSpocCourse()) {
+            var spocResult = await spocGoNext();
+            if (spocResult === true) return true;
+            if (spocResult === false) {
+                logDebug('nav', '🏁 SPOC：全部章节学完 → 课程学习完成');
+                alert('课程学习完成！');
+                return false;
+            }
+            logDebug('nav', 'SPOC：跳转结构未识别，退回通用 tablist 逻辑');
+        }
+
         // 当前激活的内容标签（页面加载慢时等它出现）
         var curTab = currentContentTab();
         if (!curTab) {
@@ -3863,6 +4299,8 @@
             if (findVideo()) { logDebug('load', '内容就绪：video（' + (Date.now() - t0) + 'ms）'); return true; }
             if (findDocViewer()) { logDebug('load', '内容就绪：文档查看器（' + (Date.now() - t0) + 'ms）'); return true; }
             if (looksLikeDiscussionPage()) { logDebug('load', '内容就绪：讨论页（' + (Date.now() - t0) + 'ms）'); return true; }
+            // 随堂测验页没有视频/文档/正文，只有题块。不认它就会“等 15 秒判加载失败”
+            if (hasVisibleQuestionBlocks()) { logDebug('load', '内容就绪：题目块（' + (Date.now() - t0) + 'ms）'); return true; }
             if (hasVisibleContentBody()) { logDebug('load', '内容就绪：富文本/标题页正文（' + (Date.now() - t0) + 'ms）'); return true; }
             await sleep(500);
         }
@@ -3908,10 +4346,18 @@
         } else if (type === 'doc') {
             done = await learnDocItem();
         } else if (type === 'quiz') {
-            // 测验：导航时已尽量跳过不进入；万一进来了也直接跳过，绝不停留作答
-            logDebug('learn', 'quiz：测验内容直接跳过不进入');
-            updateStatus('⏭ 测验内容：跳过（不进入作答），直接进入下一个内容...');
-            done = true;
+            // MOOC：导航时已尽量跳过测验；万一进来了也直接跳过，绝不停留作答。
+            // SPOC：小节的「测试」就是随堂测验，跳过去没人会回来做，所以这里直接作答提交。
+            if (isSpocCourse() && CONFIG.LEARN_AUTO_QUIZ_SPOC) {
+                logDebug('learn', 'SPOC 随堂测验：自动作答并提交');
+                updateStatus('📝 SPOC 随堂测验：自动作答并提交...');
+                await completeLessonQuiz();
+                done = true;
+            } else {
+                logDebug('learn', 'quiz：测验内容直接跳过不进入');
+                updateStatus('⏭ 测验内容：跳过（不进入作答），直接进入下一个内容...');
+                done = true;
+            }
         } else if (type === 'discussion') {
             done = await learnDiscussionItem();
         } else {
@@ -4014,6 +4460,7 @@
         var lines = [];
         lines.push('URL: ' + location.href);
         lines.push('Hash: ' + location.hash);
+        lines.push('课程类型: ' + courseUiLabel() + '（' + detectCourseUi() + '）');
         lines.push('Title: ' + cleanText(document.title).slice(0, 100));
         lines.push('');
         var groups = {
@@ -4157,6 +4604,47 @@
             shownD++;
         }
         if (shownD === 0) lines.push('  （页面里没有找到带 aria-expanded 的下拉按钮）');
+
+        // —— SPOC 结构（MOOC 页面这段基本是空的，填了也不影响阅读）——
+        lines.push('【SPOC 结构】');
+        var sItems = spocUnitItems();
+        lines.push('  内容项 .unitslist > .f-fl：' + sItems.length + ' 个'
+            + (sItems.length ? '，当前索引=' + spocCurrentIndex(sItems) : ''));
+        for (var si = 0; si < sItems.length && si < 12; si++) {
+            var sCls = typeof sItems[si].className === 'string' ? sItems[si].className : '';
+            lines.push('    [' + (spocCurrentIndex(sItems) === si ? '*' : ' ') + '] ' + cleanText(sItems[si].textContent).slice(0, 24)
+                + '  class="' + sCls.slice(0, 60) + '"');
+        }
+        var sUps = document.querySelectorAll('.up.j-up');
+        lines.push('  章节/小节下拉 .up.j-up：' + sUps.length + ' 个');
+        for (var ui = 0; ui < sUps.length && ui < 4; ui++) {
+            lines.push('    [' + ui + '] ' + cleanText(sUps[ui].textContent).slice(0, 30));
+        }
+        var sLists = document.querySelectorAll('.down.j-list');
+        for (var li2 = 0; li2 < sLists.length && li2 < 4; li2++) {
+            var sLis = sLists[li2].querySelectorAll('.list');
+            lines.push('  下拉面板[' + li2 + '] .list：' + sLis.length + ' 项'
+                + (sLis.length ? '，首项=' + cleanText(sLis[0].textContent).slice(0, 20) : ''));
+        }
+        var sTabs = document.querySelectorAll('.learn-unit-tabs-scroll button');
+        if (sTabs.length) {
+            var tabStr = [];
+            for (var ti = 0; ti < sTabs.length && ti < 10; ti++) {
+                tabStr.push(cleanText(sTabs[ti].textContent).slice(0, 10) || '（无文字）');
+            }
+            lines.push('  内容标签栏 .learn-unit-tabs-scroll：' + sTabs.length + ' 个 → ' + tabStr.join(' / '));
+            lines.push('  当前激活标签文字：' + (spocActiveTabText() || '（未识别）'));
+        }
+        lines.push('  题块 .m-choiceQuestion：' + document.querySelectorAll('.m-choiceQuestion').length + ' 个');
+        lines.push('  提交 .j-submit：' + document.querySelectorAll('.j-submit').length
+            + ' 个；重做 .j-replay：' + document.querySelectorAll('.j-replay').length + ' 个');
+        lines.push('  讨论区 .m-data-lists：' + document.querySelectorAll('.m-data-lists').length
+            + ' 个；编辑器 .ql-editor：' + document.querySelectorAll('.ql-editor').length + ' 个');
+        lines.push('  dwr paper：' + (SPOC_DWR.paper ? '已捕获' : '未捕获')
+            + '；dwr hook：' + (SPOC_DWR.patched ? '已挂' : '未挂')
+            + '；见过 dwr 请求：' + (SPOC_DWR.sawRequest ? '是' : '否'));
+        lines.push('');
+
         lines.push('【内容标签栏 role=tablist】');
         var tablists = document.querySelectorAll('[role="tablist"]');
         var shownTab = 0;
@@ -4183,6 +4671,15 @@
         createFloatingPanel();
         // 悬浮【下一节】按钮（自动学习运行时显示）
         createFloatNextBtn();
+        // SPOC：尽早挂 dwr hook，后续每次切内容都能把 paper 收下来。
+        // 只观测 getLessonUnitLearnVo 的请求，不改写任何响应，MOOC 页面不会走到这里。
+        if (isSpocCourse()) {
+            spocHookDwr();
+            logDebug('init', '课程类型＝SPOC，已挂载 dwr hook');
+        } else {
+            logDebug('init', '课程类型＝MOOC');
+        }
+        updateStatus('就绪 · ' + courseUiLabel() + ' 课程');
         // 新版路径路由整页刷新后，接着跑上次未完成的自动学习
         resumeLearn();
     }
