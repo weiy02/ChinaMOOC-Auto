@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.12.0
-// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。
+// @version      1.13.0
+// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=icourse163.org
@@ -1625,187 +1625,148 @@
             '  position: fixed !important;',
             '  top: 100px; right: 20px;',
             '  z-index: 2147483647 !important;',
-            '  width: 252px;',
-            '  border-radius: 18px;',
+            '  width: 238px;',
+            '  border-radius: 14px;',
             '  overflow: hidden;',
             '  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;',
-            '  color: #1c1c1e;',
+            '  color: #ededed;',
             '  user-select: none;',
-            '  background: rgba(252, 252, 254, 0.68);',
-            '  backdrop-filter: blur(32px) saturate(180%);',
-            '  -webkit-backdrop-filter: blur(32px) saturate(180%);',
-            '  border: 1px solid rgba(255, 255, 255, 0.75);',
-            '  box-shadow:',
-            '    0 12px 32px -8px rgba(15, 20, 40, 0.18),',
-            '    0 2px 8px -2px rgba(15, 20, 40, 0.08),',
-            '    inset 0 1px 0 rgba(255, 255, 255, 0.95),',
-            '    inset 0 -1px 0 rgba(255, 255, 255, 0.35);',
+            '  background: #18181b;',
+            '  border: 1px solid rgba(255, 255, 255, 0.1);',
+            '  box-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.65), 0 2px 8px -2px rgba(0, 0, 0, 0.4);',
             '}',
             '#mar-header {',
             '  display: flex; justify-content: space-between; align-items: center;',
-            '  padding: 11px 14px; cursor: move;',
-            '  font-size: 13px; font-weight: 600; letter-spacing: 0.01em;',
-            '  color: #1c1c1e;',
-            '  background: rgba(255, 255, 255, 0.22);',
-            '  border-bottom: 1px solid rgba(255, 255, 255, 0.55);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);',
+            '  padding: 10px 12px; cursor: move;',
+            '  border-bottom: 1px solid rgba(255, 255, 255, 0.07);',
             '}',
-            '#mar-title { display: flex; align-items: center; gap: 7px; }',
-            '#mar-title .mar-dot {',
-            '  width: 7px; height: 7px; border-radius: 50%;',
-            '  background: #4a90e2;',
-            '  box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.6);',
-            '}',
-            '#mar-minimize {',
-            '  cursor: pointer; width: 22px; height: 22px;',
+            '#mar-title { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: #ededed; }',
+            '#mar-title .mar-dot { width: 6px; height: 6px; border-radius: 50%; background: #3b82f6; }',
+            '#mar-head-actions { display: flex; align-items: center; gap: 2px; }',
+            '#mar-help, #mar-minimize {',
+            '  width: 22px; height: 22px; padding: 0;',
             '  display: flex; align-items: center; justify-content: center;',
-            '  border-radius: 50%;',
-            '  background: rgba(255, 255, 255, 0.55);',
-            '  border: 1px solid rgba(255, 255, 255, 0.8);',
-            '  font-size: 13px; line-height: 1; color: #3a3a3c;',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(0, 0, 0, 0.05);',
-            '  transition: background 0.18s ease, transform 0.18s ease;',
+            '  border: 0; border-radius: 6px; background: transparent;',
+            '  color: #8a8a90; font-family: inherit; font-size: 12px; line-height: 1;',
+            '  cursor: pointer; transition: background 0.15s ease, color 0.15s ease;',
             '}',
-            '#mar-minimize:hover { background: rgba(255, 255, 255, 0.85); transform: scale(1.06); }',
-            '#mar-minimize:active { transform: scale(0.94); }',
-            // 选项卡：分段控件样式，选中项是一枚浮起的白色药丸
-            '#mar-tabs {',
-            '  display: flex; gap: 3px;',
-            '  padding: 7px 9px 0;',
-            '}',
+            '#mar-help:hover, #mar-minimize:hover { background: rgba(255, 255, 255, 0.08); color: #ededed; }',
+            '#mar-tabs { display: flex; gap: 2px; padding: 8px 8px 0; }',
             '.mar-tab {',
-            '  position: relative; flex: 1;',
-            '  padding: 6px 4px; border: 1px solid transparent;',
-            '  border-radius: 9px;',
-            '  background: transparent;',
-            '  font-family: inherit; font-size: 12px; font-weight: 500;',
-            '  color: #7a7a80; cursor: pointer;',
-            '  transition: color 0.16s ease, background 0.16s ease;',
+            '  flex: 1; padding: 6px 2px; border: 0; border-radius: 6px;',
+            '  background: transparent; color: #8a8a90;',
+            '  font-family: inherit; font-size: 11.5px; font-weight: 500;',
+            '  cursor: pointer; transition: background 0.15s ease, color 0.15s ease;',
             '}',
-            '.mar-tab:hover:not(.mar-active) { color: #1c1c1e; background: rgba(255, 255, 255, 0.34); }',
-            '.mar-tab.mar-active {',
-            '  color: #1c1c1e; font-weight: 600;',
-            '  background: rgba(255, 255, 255, 0.62);',
-            '  border-color: rgba(255, 255, 255, 0.75);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 20, 40, 0.05);',
-            '}',
-            // 视图：同一时刻只有一个 .mar-pane 是 flex
-            '.mar-pane { display: none; flex-direction: column; gap: 7px; }',
+            '.mar-tab:hover:not(.mar-active) { color: #c4c4c8; background: rgba(255, 255, 255, 0.05); }',
+            '.mar-tab.mar-active { color: #ffffff; background: rgba(255, 255, 255, 0.1); }',
+            '.mar-pane { display: none; flex-direction: column; gap: 6px; }',
             '.mar-pane.mar-active { display: flex; }',
-            '#mar-body { padding: 10px 12px; }',
-            // 状态栏和停止按钮独立于选项卡：切到哪个视图都能看到进度、都能停
-            '#mar-foot { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 7px; }',
+            '#mar-body { padding: 8px; }',
+            '#mar-foot { padding: 0 8px 10px; display: flex; flex-direction: column; gap: 6px; }',
             '.mar-btn {',
-            '  position: relative; display: flex; align-items: center; gap: 9px;',
-            '  padding: 9px 12px; border-radius: 11px;',
-            '  border: 1px solid rgba(255, 255, 255, 0.75);',
-            '  background: rgba(255, 255, 255, 0.42);',
-            '  color: #1c1c1e; font-family: inherit;',
-            '  font-size: 12.5px; font-weight: 500; text-align: left;',
+            '  display: flex; align-items: center;',
+            '  width: 100%; padding: 8px 10px;',
+            '  border: 1px solid transparent; border-radius: 8px;',
+            '  background: rgba(255, 255, 255, 0.055);',
+            '  color: #e4e4e7; font-family: inherit;',
+            '  font-size: 12px; font-weight: 400; text-align: left;',
             '  cursor: pointer;',
-            '  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(15, 20, 40, 0.05);',
-            '  transition: background 0.18s ease, transform 0.14s ease, box-shadow 0.18s ease;',
+            '  transition: background 0.15s ease, border-color 0.15s ease;',
             '}',
-            '.mar-btn::before {',
-            '  content: ""; width: 6px; height: 6px; border-radius: 50%;',
-            '  flex-shrink: 0; background: #94a3b8;',
-            '  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);',
-            '  transition: transform 0.18s ease;',
-            '}',
-            '#mar-one::before   { background: #4a90e2; }',
-            '#mar-batch::before { background: #34a853; }',
-            '#mar-auto::before  { background: #f5a623; }',
-            '#mar-fix::before   { background: #8b5cf6; }',
-            '#mar-discuss-preview::before { background: #0ea5e9; }',
-            '#mar-discuss-reply::before   { background: #22c55e; }',
-            '#mar-learn-start::before    { background: #f97316; }',
-            '#mar-lesson-quiz::before    { background: #6366f1; }',
-            '#mar-learn-probe::before    { background: #14b8a6; }',
-            '#mar-stop::before  { background: #e53e3e; }',
-            '.mar-btn:hover:not(:disabled) {',
-            '  background: rgba(255, 255, 255, 0.72); transform: translateY(-1px);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 10px -2px rgba(15, 20, 40, 0.12);',
-            '}',
-            '.mar-btn:hover:not(:disabled)::before { transform: scale(1.15); }',
-            '.mar-btn:active:not(:disabled) {',
-            '  transform: translateY(0); background: rgba(255, 255, 255, 0.5);',
-            '  box-shadow: inset 0 1px 3px rgba(15, 20, 40, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);',
-            '}',
-            '.mar-btn:disabled { opacity: 0.42; cursor: not-allowed; filter: saturate(0.4); }',
-            '#mar-fix:not(:disabled) { color: #6d28d9; background: rgba(243, 236, 255, 0.55); border-color: rgba(200, 180, 255, 0.8); }',
-            '#mar-fix:hover:not(:disabled) {',
-            '  background: rgba(238, 226, 255, 0.85);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 12px -2px rgba(109, 40, 217, 0.22);',
-            '}',
-            '#mar-stop:not(:disabled) { color: #b42318; background: rgba(255, 236, 236, 0.6); border-color: rgba(255, 200, 200, 0.8); }',
-            '#mar-stop:hover:not(:disabled) {',
-            '  background: rgba(255, 224, 224, 0.85);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 12px -2px rgba(180, 35, 24, 0.22);',
-            '}',
-            // 停止按钮平时不占地方，只有任务在跑时才由 setButtonsRunning() 放出来
+            '.mar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }',
+            '.mar-btn:active:not(:disabled) { background: rgba(255, 255, 255, 0.14); }',
+            '.mar-btn:disabled { opacity: 0.34; cursor: not-allowed; }',
+            '#mar-fix:not(:disabled) { color: #a78bfa; }',
             '#mar-stop { display: none; }',
+            '#mar-stop:not(:disabled) { color: #f87171; background: rgba(248, 113, 113, 0.1); }',
+            '#mar-stop:hover:not(:disabled) { background: rgba(248, 113, 113, 0.16); }',
             '#mar-status {',
-            '  padding: 9px 11px; border-radius: 10px;',
-            '  background: rgba(255, 255, 255, 0.3);',
-            '  border: 1px solid rgba(255, 255, 255, 0.55);',
-            '  box-shadow: inset 0 1px 2px rgba(15, 20, 40, 0.04), inset 0 -1px 0 rgba(255, 255, 255, 0.6);',
-            '  font-size: 11.5px; line-height: 1.5; color: #3a3a3c;',
-            '  min-height: 16px; word-break: break-all;',
-            '  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);',
+            '  padding: 6px 2px 0;',
+            '  font-size: 11px; line-height: 1.55; color: #8a8a90;',
+            '  min-height: 16px; word-break: break-word;',
             '}',
-            '#mar-copy-unlock::before { background: #64748b; }',
-            // 日志框：等宽小字 + 可滚动 + 底部自动跟随
             '.mar-log-box {',
             '  height: 150px; overflow-y: auto;',
-            '  padding: 6px 8px; border-radius: 10px;',
-            '  background: rgba(15, 20, 40, 0.92);',
-            '  border: 1px solid rgba(255, 255, 255, 0.18);',
+            '  padding: 8px; border-radius: 8px;',
+            '  background: #0f0f11;',
+            '  border: 1px solid rgba(255, 255, 255, 0.07);',
             '  font-family: Menlo, Consolas, "SF Mono", monospace;',
-            '  font-size: 10.5px; line-height: 1.45;',
-            '  color: #d6dbe6; white-space: pre-wrap; word-break: break-all;',
+            '  font-size: 10.5px; line-height: 1.5;',
+            '  color: #d4d4d8; white-space: pre-wrap; word-break: break-all;',
             '}',
             '.mar-log-line { margin: 1px 0; }',
-            '.mar-log-t { color: #8b93a7; margin-right: 4px; }',
-            '.mar-log-cat { color: #7dd3fc; font-weight: 600; }',
-            '.mar-log-empty { color: #8b93a7; padding: 8px 2px; }',
-            // 开启态：绿点 + 淡绿底，一眼能看出复制限制现在是解开的
-            '#mar-copy-unlock.mar-on::before { background: #22c55e; }',
-            '#mar-copy-unlock.mar-on:not(:disabled) {',
-            '  color: #15803d; background: rgba(226, 252, 235, 0.6);',
-            '  border-color: rgba(160, 230, 190, 0.85);',
-            '}',
-            '#mar-copy-unlock.mar-on:hover:not(:disabled) { background: rgba(214, 250, 226, 0.88); }',
-            // 设置项：一行标题 + 下面一行二选一的分段控件
+            '.mar-log-t { color: #6b6b75; margin-right: 4px; }',
+            '.mar-log-cat { color: #60a5fa; font-weight: 600; }',
+            '.mar-log-empty { color: #6b6b75; padding: 8px 2px; }',
+            '#mar-copy-unlock.mar-on:not(:disabled) { color: #4ade80; background: rgba(74, 222, 128, 0.1); }',
+            '#mar-copy-unlock.mar-on:hover:not(:disabled) { background: rgba(74, 222, 128, 0.16); }',
             '.mar-field {',
-            '  display: flex; flex-direction: column; gap: 6px;',
-            '  padding: 9px 11px; border-radius: 11px;',
-            '  background: rgba(255, 255, 255, 0.3);',
-            '  border: 1px solid rgba(255, 255, 255, 0.55);',
-            '  box-shadow: inset 0 1px 2px rgba(15, 20, 40, 0.04);',
+            '  display: flex; flex-direction: column; gap: 5px;',
+            '  padding: 8px 10px; border-radius: 8px;',
+            '  background: rgba(255, 255, 255, 0.035);',
             '}',
-            '.mar-label { font-size: 11.5px; font-weight: 600; color: #3a3a3c; }',
-            '.mar-hint { font-size: 10.5px; line-height: 1.45; color: #7a7a80; }',
-            '.mar-seg {',
-            '  display: flex; gap: 3px; padding: 3px;',
-            '  border-radius: 9px;',
-            '  background: rgba(255, 255, 255, 0.3);',
-            '  border: 1px solid rgba(255, 255, 255, 0.6);',
-            '}',
+            '.mar-label { font-size: 11.5px; font-weight: 500; color: #a1a1aa; }',
+            '.mar-hint { font-size: 10.5px; line-height: 1.5; color: #6b6b75; }',
+            '.mar-seg { display: flex; gap: 2px; padding: 2px; border-radius: 7px; background: rgba(0, 0, 0, 0.35); }',
             '.mar-seg-btn {',
-            '  flex: 1; padding: 6px 4px;',
-            '  border: 1px solid transparent; border-radius: 7px;',
-            '  background: transparent;',
-            '  font-family: inherit; font-size: 11.5px; font-weight: 500;',
-            '  color: #7a7a80; cursor: pointer;',
-            '  transition: color 0.16s ease, background 0.16s ease;',
+            '  flex: 1; padding: 5px 4px; border: 0; border-radius: 5px;',
+            '  background: transparent; color: #8a8a90;',
+            '  font-family: inherit; font-size: 11px; font-weight: 500;',
+            '  cursor: pointer; transition: background 0.15s ease, color 0.15s ease;',
             '}',
-            '.mar-seg-btn:hover:not(.mar-active) { color: #1c1c1e; background: rgba(255, 255, 255, 0.4); }',
-            '.mar-seg-btn.mar-active {',
-            '  color: #1c1c1e; font-weight: 600;',
-            '  background: rgba(255, 255, 255, 0.75);',
-            '  border-color: rgba(255, 255, 255, 0.85);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 20, 40, 0.06);',
+            '.mar-seg-btn:hover:not(.mar-active) { color: #c4c4c8; }',
+            '.mar-seg-btn.mar-active { background: rgba(255, 255, 255, 0.12); color: #ffffff; }',
+            '#mar-video-rate { width: 100%; height: 16px; margin: 2px 0; appearance: none; -webkit-appearance: none; background: transparent; cursor: pointer; }',
+            '#mar-video-rate::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.16); }',
+            '#mar-video-rate::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; margin-top: -4.5px; border-radius: 50%; background: #3b82f6; }',
+            '#mar-video-rate::-moz-range-track { height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.16); }',
+            '#mar-video-rate::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #3b82f6; }',
+            // 使用说明浮层：单独按钮打开，盖一层暗色遮罩，内容可滚动、可选中复制
+            '#mar-help-overlay {',
+            '  position: fixed !important; inset: 0;',
+            '  z-index: 2147483647 !important;',
+            '  display: flex; align-items: center; justify-content: center;',
+            '  background: rgba(0, 0, 0, 0.55);',
+            '  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;',
+            '}',
+            '#mar-help-card {',
+            '  width: min(520px, 90vw); max-height: 82vh;',
+            '  display: flex; flex-direction: column; overflow: hidden;',
+            '  background: #18181b; color: #ededed;',
+            '  border: 1px solid rgba(255, 255, 255, 0.1);',
+            '  border-radius: 14px;',
+            '  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.7);',
+            '}',
+            '#mar-help-head {',
+            '  display: flex; justify-content: space-between; align-items: center;',
+            '  padding: 14px 16px;',
+            '  border-bottom: 1px solid rgba(255, 255, 255, 0.07);',
+            '  font-size: 13px; font-weight: 600;',
+            '}',
+            '#mar-help-close {',
+            '  width: 24px; height: 24px; padding: 0;',
+            '  display: flex; align-items: center; justify-content: center;',
+            '  border: 0; border-radius: 6px; background: transparent;',
+            '  color: #8a8a90; font-family: inherit; font-size: 16px; line-height: 1;',
+            '  cursor: pointer;',
+            '}',
+            '#mar-help-close:hover { background: rgba(255, 255, 255, 0.08); color: #ededed; }',
+            '#mar-help-body {',
+            '  padding: 4px 16px 18px; overflow-y: auto;',
+            '  font-size: 12px; line-height: 1.7; color: #c4c4c8;',
+            '  user-select: text;',
+            '}',
+            '#mar-help-body h4 {',
+            '  margin: 14px 0 4px; font-size: 12px; font-weight: 600; color: #ffffff;',
+            '}',
+            '#mar-help-body h4:first-child { margin-top: 10px; }',
+            '#mar-help-body ul { margin: 0; padding-left: 17px; }',
+            '#mar-help-body li { margin: 2px 0; }',
+            '#mar-help-body code {',
+            '  padding: 1px 4px; border-radius: 4px;',
+            '  background: rgba(255, 255, 255, 0.08); color: #d4d4d8;',
+            '  font-family: Menlo, Consolas, monospace; font-size: 11px;',
             '}',
             // 探针结果浮层：只读诊断用，全选复制
             '#mar-probe-overlay {',
@@ -1890,6 +1851,90 @@
         return 'review';
     }
 
+    // ===================== 使用说明浮层 =====================
+    // 面板本身只留按钮，所有解释文案集中到这里：标题栏右上角的「?」打开。
+    // 独立挂到 body（不放进面板），避免被面板的 overflow 裁掉。
+    var HELP_HTML = [
+        '<h4>互评</h4>',
+        '<ul>',
+        '<li><b>一键互评</b>：处理当前 1 份，按题目真实分值选最高分组合，评语固定「科技改变生活」，答题者不可见。</li>',
+        '<li><b>快速互评</b>：连续处理 10 份。<b>全自动互评</b>：循环执行直到没有待评作业。</li>',
+        '<li><b>评分修复</b>：已经评过的按同样规则重算并修正分数。</li>',
+        '<li>在测验 / 作业 / 考试答题页会自动拒绝执行，避免把题目选项当成分数选中并提交。</li>',
+        '</ul>',
+        '<h4>课堂讨论</h4>',
+        '<ul>',
+        '<li><b>预览</b>：只显示将从哪条已有回复里取正文，不发布。<b>一键回复</b>：填进编辑器并发布。</li>',
+        '<li>正文只从已有人回复里取，不自己编；同一条讨论只回复一次。</li>',
+        '<li>来源可在「设置」里切换最新答复 / 点赞最多，页面没显示点赞数时自动退回最新一条。</li>',
+        '</ul>',
+        '<h4>随堂测验</h4>',
+        '<ul>',
+        '<li>只在小节内容条里那个「测试」标签下生效——它和视频、文档、讨论同级，通常不限次数。</li>',
+        '<li>答案来源：MOOC 走课件接口 <code>unit-page</code>，SPOC 走 dwr 的 <code>getLessonUnitLearnVo</code>。</li>',
+        '<li>读不到答案就一个选项都不点、也不提交；有题目没匹配上时只填不交，留给你手动补完。</li>',
+        '<li>已经答过的会先点「重新答题」再作答。</li>',
+        '<li>单元测验、作业、考试是独立页面，一律不处理。</li>',
+        '</ul>',
+        '<h4>自动学习</h4>',
+        '<ul>',
+        '<li>从当前内容开始，学完一个自动进下一个，直到全部学完；页面刷新后自动续跑。</li>',
+        '<li><b>视频</b>：从头播放（可调倍速），播完进下一个内容——不「视频接视频」。</li>',
+        '<li><b>文档 / 课件</b>：每页约 1 秒自动翻页。<b>富文本</b>：停留 10 秒后跳转。</li>',
+        '<li><b>讨论</b>：自动回复。</li>',
+        '<li><b>随堂测验</b>：自动作答并提交，提交后停留 10 秒再进下一个内容。</li>',
+        '<li><b>单元测验 / 作业 / 考试</b>：不进入。</li>',
+        '<li><b>视频中弹题</b>：自动作答；答错视频会停住，需要手动点一下播放。</li>',
+        '<li>右下角<b>【下一节】</b>随时可点，立即跳到下一个内容。</li>',
+        '</ul>',
+        '<h4>日志与诊断</h4>',
+        '<ul>',
+        '<li>「日志」页记录检测结果、跳转决策与异常，遇到问题切过去复制出来。</li>',
+        '<li>「页面 DOM 诊断」导出当前页面结构快照，用于适配改版后的页面。</li>',
+        '</ul>',
+        '<h4>设置</h4>',
+        '<ul>',
+        '<li>讨论内容来源、视频倍速（0.5x ~ 3x）、解除页面复制限制、清除讨论回复记录。</li>',
+        '</ul>',
+        '<h4>课程类型</h4>',
+        '<ul>',
+        '<li>自动识别 MOOC 与 SPOC 两套前端并分别适配，两条路径互不影响。</li>',
+        '</ul>',
+    ].join('');
+
+    function setHelpVisible(show) {
+        var o = document.getElementById('mar-help-overlay');
+        if (!o) return;
+        o.style.display = show ? 'flex' : 'none';
+    }
+
+    function createHelpOverlay() {
+        if (document.getElementById('mar-help-overlay')) return;
+        var wrap = document.createElement('div');
+        wrap.id = 'mar-help-overlay';
+        wrap.style.display = 'none';
+        wrap.innerHTML = [
+            '<div id="mar-help-card">',
+            '  <div id="mar-help-head">',
+            '    <span>使用说明</span>',
+            '    <button id="mar-help-close" title="关闭">×</button>',
+            '  </div>',
+            '  <div id="mar-help-body">' + HELP_HTML + '</div>',
+            '</div>',
+        ].join('');
+        document.body.appendChild(wrap);
+
+        document.getElementById('mar-help-close').addEventListener('click', function () { setHelpVisible(false); });
+        // 点遮罩空白处关闭；点卡片内部不关
+        wrap.addEventListener('click', function (e) { if (e.target === wrap) setHelpVisible(false); });
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && wrap.style.display === 'flex') setHelpVisible(false);
+        });
+
+        var helpBtn = document.getElementById('mar-help');
+        if (helpBtn) helpBtn.addEventListener('click', function () { setHelpVisible(true); });
+    }
+
     function createFloatingPanel() {
         if (document.getElementById('mooc-auto-review-panel')) return;
         injectStyles();
@@ -1899,13 +1944,16 @@
         panel.innerHTML = [
             '<div id="mar-header">',
             '  <span id="mar-title"><span class="mar-dot"></span>MOOC 助手</span>',
-            '  <span id="mar-minimize" title="最小化">−</span>',
+            '  <span id="mar-head-actions">',
+            '    <button id="mar-help" title="使用说明">?</button>',
+            '    <button id="mar-minimize" title="最小化">−</button>',
+            '  </span>',
             '</div>',
             '<div id="mar-main">',
             '  <div id="mar-tabs">',
             '    <button class="mar-tab" data-tab="review">互评</button>',
             '    <button class="mar-tab" data-tab="discuss">讨论</button>',
-            '    <button class="mar-tab" data-tab="auto">自动学习</button>',
+            '    <button class="mar-tab" data-tab="auto">学习</button>',
             '    <button class="mar-tab" data-tab="log">日志</button>',
             '    <button class="mar-tab" data-tab="settings">设置</button>',
             '  </div>',
@@ -1920,30 +1968,18 @@
             '      <button id="mar-discuss-preview" class="mar-btn">预览将回复的内容</button>',
             '      <button id="mar-discuss-reply" class="mar-btn">一键回复当前讨论</button>',
             '      <div class="mar-field">',
-            '        <span class="mar-label">内容来源：<span id="mar-source-now">最新答复</span></span>',
-            '        <span class="mar-hint">回复正文取自已回复区域（可在「设置」里切换来源）；同一条讨论只回复一次。</span>',
+            '        <span class="mar-label">来源：<span id="mar-source-now">最新答复</span></span>',
             '      </div>',
             '    </div>',
             '    <div class="mar-pane" data-pane="auto">',
             '      <button id="mar-learn-start" class="mar-btn">开始自动学习（当前章）</button>',
             '      <button id="mar-lesson-quiz" class="mar-btn">随堂测验：一键完成并提交</button>',
             '      <button id="mar-learn-probe" class="mar-btn">页面 DOM 诊断</button>',
-            '      <div class="mar-field">',
-            '        <span class="mar-label">随堂测验说明</span>',
-            '        <span class="mar-hint">只在随堂测验（小节里那个「测试」标签）下可用：取正确答案（MOOC 走课件接口、SPOC 走 dwr）→逐题填涂→自动提交。读不到答案就一个选项都不点；有题目匹配不上时只填不交，留给你手动补完。</span>',
-            '      </div>',
-            '      <div class="mar-field">',
-            '        <span class="mar-label">自动学习说明</span>',
-            '        <span class="mar-hint">从当前章第一个内容开始：视频从头播放→看完进入下一个内容（随堂测验/文档/讨论等，不是下一个视频）；文档每页 1 秒自动翻页；讨论自动回复；<b>随堂测验自动作答并提交，提交后停留 10 秒再进下一个内容</b>；单元测验/作业/考试不进入。视频中弹出的题目自动作答（答对自动继续，答错请手动点击播放）。</span>',
-            '      </div>',
             '    </div>',
             '    <div class="mar-pane" data-pane="log">',
-            '      <div style="display:flex;gap:6px;margin-bottom:6px;">',
+            '      <div style="display:flex;gap:6px;">',
             '        <button id="mar-log-copy" class="mar-btn" style="flex:1;">复制日志</button>',
             '        <button id="mar-log-clear" class="mar-btn" style="flex:1;">清空</button>',
-            '      </div>',
-            '      <div class="mar-field">',
-            '        <span class="mar-hint">开发者调试日志：检测到了什么、跳转决策、异常等。出现问题时切到本页复制日志发作者。</span>',
             '      </div>',
             '      <div id="mar-log-box" class="mar-log-box">（暂无日志）</div>',
             '    </div>',
@@ -1954,12 +1990,10 @@
             '          <button class="mar-seg-btn" data-source="latest">最新答复</button>',
             '          <button class="mar-seg-btn" data-source="liked">点赞最多</button>',
             '        </div>',
-            '        <span class="mar-hint">默认「最新答复」。选「点赞最多」时，若页面没显示点赞数会自动退回最新一条。</span>',
             '      </div>',
             '      <div class="mar-field">',
             '        <span class="mar-label">视频倍速：<span id="mar-rate-now">1.0x</span></span>',
-            '        <input id="mar-video-rate" type="range" min="0.5" max="3" step="0.25" value="1" style="width:100%">',
-            '        <span class="mar-hint">自动学习播放视频时使用的倍速（0.5x ~ 3x）。</span>',
+            '        <input id="mar-video-rate" type="range" min="0.5" max="3" step="0.25" value="1">',
             '      </div>',
             '      <button id="mar-copy-unlock" class="mar-btn mar-toggle">解除复制限制：关</button>',
             '      <button id="mar-discuss-clear" class="mar-btn">清除回复记录</button>',
@@ -1972,6 +2006,7 @@
             '</div>'
         ].join('');
         document.body.appendChild(panel);
+        createHelpOverlay();
 
         statusEl = document.getElementById('mar-status');
 
@@ -1996,7 +2031,9 @@
         var header = document.getElementById('mar-header');
         var dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
         header.addEventListener('mousedown', function (e) {
-            if (e.target && e.target.id === 'mar-minimize') return;
+            // 标题栏右侧的「?」和「−」是按钮，不要触发拖动
+            if (e.target && e.target.closest && e.target.closest('#mar-head-actions')) return;
+            if (e.target && (e.target.id === 'mar-minimize' || e.target.id === 'mar-help')) return;
             dragging = true;
             sx = e.clientX; sy = e.clientY;
             var rect = panel.getBoundingClientRect();
@@ -2574,7 +2611,7 @@
         for (i = 0; i < cands.length && out.length < LESSON_QUIZ.MAX_BLOCKS; i++) {
             var el = cands[i];
             if (!isVisible(el)) continue;
-            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay')) continue;
+            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay')) continue;
             if (!el.querySelector(inputSel)) continue;
             // 老版单元测验/作业的题块，明确不碰
             if (el.querySelector('.u-questionItem')) continue;
@@ -2912,7 +2949,7 @@
             for (var i = 0; i < els.length; i++) {
                 var el = els[i];
                 if (!isVisible(el) || el.disabled) continue;
-                if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-float-next')) continue;
+                if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-float-next')) continue;
                 var t = cleanText(el.textContent || el.value || '');
                 if (LESSON_QUIZ.SUBMIT_TEXT.test(t)) return el;
             }
@@ -2940,7 +2977,7 @@
             var dlg = dlgs[d];
             if (!isVisible(dlg)) continue;
             if (dlg.clientWidth < 160 || dlg.clientHeight < 80) continue;
-            if (dlg.closest && dlg.closest('#mooc-auto-review-panel, #mar-probe-overlay')) continue;
+            if (dlg.closest && dlg.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay')) continue;
             var btns = dlg.querySelectorAll('button, [role="button"], a, input[type="submit"]');
             for (var b = 0; b < btns.length; b++) {
                 if (!isVisible(btns[b]) || btns[b].disabled) continue;
@@ -2960,7 +2997,7 @@
         for (var i = 0; i < els.length; i++) {
             var el = els[i];
             if (!isVisible(el) || el.clientWidth < 160) continue;
-            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay')) continue;
+            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay')) continue;
             var t = cleanText(el.textContent || '');
             if (!t || t.length > 300) continue;
             if (/正确率|答对|答错|得分|本次得分|共\s*\d+\s*题/.test(t)) return t.slice(0, 120);
