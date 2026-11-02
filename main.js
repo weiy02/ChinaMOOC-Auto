@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.13.3
+// @version      1.14.0
 // @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
@@ -61,6 +61,14 @@
         LEARN_AUTO_QUIZ: true,
         // 随堂测验提交后停留多久再跳下一个内容（用户要求 10 秒）
         LEARN_QUIZ_AFTER_MS: 10000,
+        // 判定「是不是随堂测验」时最多等多久让题块渲染出来。
+        // 刚切到「测试」标签时容器往往还是空的，立刻判会把随堂测验误判成
+        // 单元测验/考试而直接跳过（手动点按钮时页面早已加载完，所以不会复现）。
+        LEARN_QUIZ_READY_WAIT: 8000,
+        // 每次跳转后强制停留多久才开始处理新内容（用户要求 10 秒）。
+        // 页面刚切过去时 DOM 往往还是上一份内容，立即判定会误判类型，
+        // 甚至把“还没开始的内容”当成已完成而马上跳到下一节。
+        LEARN_JUMP_SETTLE_MS: 10000,
     };
 
     var LIST_CONFIG = {
@@ -2180,6 +2188,7 @@
         '<li>读不到答案就一个选项都不点、也不提交；有题目没匹配上时只填不交，留给你手动补完。</li>',
         '<li>已经答过的会先点「重新答题」再作答。</li>',
         '<li>单元测验、作业、考试是独立页面，一律不处理。</li>',
+        '<li>自动学习走到这里时，会先等最多 8 秒让题块渲染出来再判定，不会因为「刚切过来还空着」就跳过。</li>',
         '</ul>',
         '<h4>自动学习</h4>',
         '<ul>',
@@ -2188,6 +2197,7 @@
         '<li><b>文档 / 课件</b>：每页约 1 秒自动翻页。<b>富文本</b>：停留 10 秒后跳转。</li>',
         '<li><b>讨论</b>：自动回复。</li>',
         '<li><b>随堂测验</b>：自动作答并提交，提交后停留 10 秒再进下一个内容。</li>',
+        '<li><b>每次跳转后先硬等 10 秒</b>再处理新内容——刚切过去时页面还是上一份内容，立刻判定会认错类型甚至秒跳下一节。等待期间点【下一节】可提前跳过。</li>',
         '<li><b>单元测验 / 作业 / 考试</b>：不进入。</li>',
         '<li><b>视频中弹题</b>：自动作答；答错视频会停住，需要手动点一下播放。</li>',
         '<li>右下角<b>【下一节】</b>随时可点，立即跳到下一个内容。</li>',
@@ -3443,11 +3453,33 @@
     // 单元测验、作业、考试都是独立页面，靠 ③④ 挡掉。
     function isLessonQuizPage() {
         if (PAGE_CONFIG.examUrl.test(location.href)) return false;
+        // ① 最高优先级：真的有随堂测验容器 + 题块，就是随堂测验。
+        // 这里必须和「随堂测验：一键完成并提交」用同一套判据（lqScope + lqBlocks），
+        // 否则会出现「手动点按钮能作答、自动学习却判成非随堂测验而跳过」。
+        var scope = lqScope();
+        if (scope && lqBlocks(scope).length > 0) return true;
+        // ② SPOC：小节内容页里的题块
         if (isSpocCourse()) return spocInLessonPage() && hasVisibleQuestionBlocks();
-        if (lqScope()) return true;
+        // ③ MOOC：独立路由的单元测验/作业一律不碰
         if (PAGE_CONFIG.quizUrl.test(location.href)) return false;
         if (!inLessonContentPage()) return false;
         return hasVisibleQuestionBlocks();
+    }
+
+    // 自动学习走到测验内容时，页面可能刚切过来、题块还没渲染。
+    // 此时立刻判会得出「非随堂测验」而直接跳过，所以要给一段等待窗口。
+    async function waitLessonQuizReady(timeout) {
+        var t0 = Date.now();
+        while (Date.now() - t0 < timeout) {
+            if (taskState.cancelled) return false;
+            if (isLessonQuizPage()) {
+                logDebug('quiz', '随堂测验就绪（' + (Date.now() - t0) + 'ms）');
+                return true;
+            }
+            await sleep(500);
+        }
+        logDebug('quiz', '等了 ' + timeout + 'ms 仍未识别到随堂测验容器/题块');
+        return isLessonQuizPage();
     }
 
     // 是否停在某个课件内容页——随堂测验一定嵌在这里面。
@@ -4173,7 +4205,9 @@
             var spocType = spocDetectContentType();
             if (spocType) return spocType;
         }
-        if (PAGE_CONFIG.quizUrl.test(href) || hasVisibleQuestionBlocks()) { logDebug('type', 'quiz：URL 命中测验路由或检测到题目块'); return 'quiz'; }
+        // 随堂测验的容器类名（LessonQuizUnit 等）比题块类名更稳定，
+        // 新版页面题块常是普通 <article>，只看 questionItem 类会漏判
+        if (PAGE_CONFIG.quizUrl.test(href) || hasVisibleQuestionBlocks() || lqScope()) { logDebug('type', 'quiz：URL 命中测验路由或检测到题目块'); return 'quiz'; }
         if (looksLikeDiscussionPage()) { logDebug('type', 'discussion：讨论页特征命中'); return 'discussion'; }
         if (findVideo()) { logDebug('type', 'video：检测到可见 video 元素'); return 'video'; }
         if (findDocViewer()) { logDebug('type', 'doc：检测到文档查看器'); return 'doc'; }
@@ -4200,6 +4234,40 @@
     }
     function learnClearState() {
         try { localStorage.removeItem(LEARN_STATE_KEY); } catch (e) {}
+    }
+
+    // ---- 跳转后强制停留 ----
+    // 页面刚切过去时，DOM 往往还是上一份内容：视频元素、题块、正文都还在，
+    // 立即判定会认错类型，甚至把「还没开始的内容」当成已完成而马上跳到下一节。
+    // 所以每次跳转成功后先记下时刻，下一轮处理前强制等满 LEARN_JUMP_SETTLE_MS。
+    // 记在 localStorage 里是必须的：MOOC 新版是整页刷新路由，内存变量会丢。
+    var lastJumpAt = 0;
+
+    function learnMarkJump() {
+        lastJumpAt = Date.now();
+        var st = learnLoadState();
+        if (st) { st.jumpAt = lastJumpAt; learnSaveState(st); }
+        logDebug('learn', '已记录跳转时刻，接下来强制等待 '
+            + Math.round(CONFIG.LEARN_JUMP_SETTLE_MS / 1000) + ' 秒再处理新内容');
+    }
+
+    async function waitJumpSettle() {
+        var st = learnLoadState();
+        var at = Math.max(lastJumpAt, (st && st.jumpAt) || 0);
+        if (!at) return;   // 首次开始学习（没有跳转过），不等
+        var left = CONFIG.LEARN_JUMP_SETTLE_MS - (Date.now() - at);
+        if (left <= 0) {
+            logDebug('learn', '距上次跳转已超过 ' + Math.round(CONFIG.LEARN_JUMP_SETTLE_MS / 1000) + ' 秒，无需再等');
+            return;
+        }
+        var sec = Math.ceil(left / 1000);
+        logDebug('learn', '跳转后强制停留：还需等 ' + sec + ' 秒');
+        updateStatus('⏳ 刚切换到新内容，强制等待 ' + sec + ' 秒后再开始处理（可点右下角【下一节】提前跳过）...');
+        // 默认硬等满 10 秒；只有「停止」和用户主动点的【下一节】能打断。
+        // 【下一节】的语义本来就是「跳过这个内容」，等在这里时按它就该放行。
+        await sleepWhile(left, function () { return manualWaitFlag; });
+        if (manualWaitFlag) logDebug('learn', '强制停留期间用户点了【下一节】，提前结束等待');
+        else logDebug('learn', '强制停留结束，开始处理当前内容');
     }
 
     // ===================== 新版 DOM 导航核心（tablist + 章节/小节下拉） =====================
@@ -4717,7 +4785,7 @@
             if (findDocViewer()) { logDebug('load', '内容就绪：文档查看器（' + (Date.now() - t0) + 'ms）'); return true; }
             if (looksLikeDiscussionPage()) { logDebug('load', '内容就绪：讨论页（' + (Date.now() - t0) + 'ms）'); return true; }
             // 随堂测验页没有视频/文档/正文，只有题块。不认它就会“等 15 秒判加载失败”
-            if (hasVisibleQuestionBlocks()) { logDebug('load', '内容就绪：题目块（' + (Date.now() - t0) + 'ms）'); return true; }
+            if (hasVisibleQuestionBlocks() || lqScope()) { logDebug('load', '内容就绪：题目块（' + (Date.now() - t0) + 'ms）'); return true; }
             if (hasVisibleContentBody()) { logDebug('load', '内容就绪：富文本/标题页正文（' + (Date.now() - t0) + 'ms）'); return true; }
             await sleep(500);
         }
@@ -4735,6 +4803,9 @@
         manualWaitFlag = false;
         await sleep(500);
         await dismissModal();
+        // 跳转后强制停留满 10 秒（含整页刷新后的续跑）。
+        // 不等的话，页面上残留的上一份 DOM 会让类型判定出错，直接跳到下一节。
+        await waitJumpSettle();
         // 等当前内容真正加载出来（修复：文档/课件还没渲染完就跳转）
         updateStatus('⏳ 等待内容加载...');
         var ready = await waitContentReady(CONFIG.LEARN_CONTENT_READY_WAIT);
@@ -4766,7 +4837,17 @@
             // 随堂测验（小节内容条里那个「测试」标签，MOOC / SPOC 都有）：
             // 自动作答并提交，提交后停留 10 秒再进下一个内容。
             // 单元测验/作业/考试是独立页——isLessonQuizPage() 会判掉，绝不动手。
-            if (CONFIG.LEARN_AUTO_QUIZ && isLessonQuizPage()) {
+            //
+            // 注意：刚切到「测试」标签时容器往往还是空的，这时直接判会得出
+            // 「非随堂测验」而跳过。手动点按钮时页面早已加载完，所以复现不出来。
+            // 先给一段等待窗口，让题块渲染出来再判。
+            var quizReady = false;
+            if (CONFIG.LEARN_AUTO_QUIZ) {
+                quizReady = await waitLessonQuizReady(CONFIG.LEARN_QUIZ_READY_WAIT);
+            } else {
+                logDebug('learn', 'quiz：LEARN_AUTO_QUIZ 已关闭，不作答');
+            }
+            if (quizReady) {
                 logDebug('learn', 'quiz：随堂测验，自动作答并提交');
                 updateStatus('📝 随堂测验：自动作答并提交...');
                 var qr = await completeLessonQuiz();
@@ -4784,8 +4865,14 @@
                 done = true;
             } else {
                 // 单元测验/作业/考试，或用户关掉了 LEARN_AUTO_QUIZ：只短暂停留，不作答
-                logDebug('learn', 'quiz：不是随堂测验（单元测验/作业/考试页），不作答，跳过');
-                updateStatus('⏭ 非随堂测验内容：不作答，直接进入下一个内容...');
+                if (!CONFIG.LEARN_AUTO_QUIZ) {
+                    logDebug('learn', 'quiz：CONFIG.LEARN_AUTO_QUIZ=false，按配置不作答');
+                    updateStatus('⏭ 已关闭随堂测验自动作答，直接进入下一个内容...');
+                } else {
+                    logDebug('learn', 'quiz：等了 ' + CONFIG.LEARN_QUIZ_READY_WAIT
+                        + 'ms 仍不是随堂测验（单元测验/作业/考试页），不作答，跳过');
+                    updateStatus('⏭ 非随堂测验内容：不作答，直接进入下一个内容...');
+                }
                 await sleep(CONFIG.LEARN_QUIZ_VISIT_MS);
                 done = true;
             }
@@ -4812,6 +4899,8 @@
         // 所有类型统一自动进入下一个内容
         var ok = await goNext();
         if (!ok) { learnClearState(); setFloatVisible(false); return; }
+        // 记下跳转时刻：下一轮 learnOne 开始前会强制等满 10 秒
+        learnMarkJump();
         await learnOne();
     }
 
@@ -4826,6 +4915,8 @@
         if (autoNext && autoNext.checked) { realClick(autoNext); updateStatus('已关闭平台自带的“自动播放下一集”'); }
 
         learnSaveState({ running: true, course: location.pathname.replace(/\/content\/\d+.*$/, '') || location.pathname, lastType: null });
+        // 手动重新开始：不受上一轮跳转留下的等待影响
+        lastJumpAt = 0;
         setFloatVisible(true);
         logDebug('learn', '🚀 手动开始自动学习，课程=' + location.pathname.slice(0, 60));
         updateStatus('🚀 自动学习开始：从当前内容处理，视频看完自动进入下一个内容...');
