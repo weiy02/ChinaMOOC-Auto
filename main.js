@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.13.1
+// @version      1.13.2
 // @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
@@ -873,6 +873,9 @@
             '.j-replyList', '.m-replyList', '.j-commentList', '.m-commentList',
             '.j-comment-list', '.reply-list', '.comment-list', '.j-comment-list-wrapper',
             '.replies-wrapper', '[class*="replies"]', '[class*="topic-replies"]',
+            // 新版论坛（tailwind 类名，楼层是 <article class="soft-shell p-5">）
+            // 动作栏 forum-reply-actions 也含 "forum"，要排掉
+            '[class*="forum"]:not([class*="actions"])',
             // 新版 UI（mooc- 前缀，BEM 命名）
             '[class*="mooc-comment"]', '[class*="mooc-discuss"]', '[class*="mooc-reply"]',
             '[class*="mooc-comment__list"]', '[class*="mooc-discuss__list"]', '[class*="mooc-reply__list"]',
@@ -888,6 +891,9 @@
             '[class*="answer-item"]', '[class*="answerItem"]',
             '[class*="discuss-item"]', '[class*="discussion-item"]',
             '[class*="floor"]', '[class*="reply-card"]', '[class*="replyCard"]',
+            // 新版论坛：一条回复就是一个 article（软卡片），
+            // 动作栏 forum-reply-actions 也在里面，靠 noiseZone 排除
+            'article', '.soft-shell',
             '.j-reply-item', '.reply-item', '.j-comment-item', '.reply-container', '.reply-main',
             // 新版 UI
             '[class*="mooc-comment__item"]', '[class*="mooc-discuss__item"]', '[class*="mooc-reply__item"]',
@@ -921,12 +927,25 @@
             '[class*="vote"]', '[class*="agree"]', '[class*="zan"]', '[class*="up-count"]',
             '.j-icon-up', '.u-icon-vote', '.j-num',
             '[class*="mooc-comment__like"]', '[class*="mooc-comment__vote"]', '[class*="mooc-like"]', '[class*="mooc-vote"]',
+            // 新版论坛：赞/踩包在 [data-forum-vote] 里，按钮带 aria-label
+            '[data-forum-vote]', '[aria-label="赞同"]', '[aria-label="赞"]',
         ],
 
         // 时间所在节点
         timeSelectors: [
             'time', '[class*="time"]', '[class*="date"]', '[class*="create"]', '[class*="publish"]',
             '.reply-item-info', '[class*="replyInfo"]',
+        ],
+
+        // 动作栏 / 元信息区：整块都不是正文。
+        // 新版论坛把「昵称 + 时间 + 赞踩 + 评论 + 举报」全塞在
+        // <div class="forum-reply-actions"> 里，而它和正文用的是同一套
+        // tailwind 类名（text-sm / text-neutral-700），只看类名分不开，
+        // 只能按「区块」整体排除。
+        noiseZoneSelectors: [
+            '[class*="actions"]', '[class*="action-bar"]', '[class*="actionbar"]',
+            '[class*="meta"]', '[class*="footer"]', '[class*="toolbar"]',
+            '[class*="operat"]', '[data-forum-vote]',
         ],
 
         // 编辑器所在作用域：先在这些容器里找输入框，找不到才看整页
@@ -951,6 +970,9 @@
 
         // 作者昵称所在节点。只用来「认出这串字是作者名」，不参与正文拼装。
         authorSelectors: [
+            // 新版论坛：昵称是 <a href="/mooc/learn/xxx/forum/personal?tid=..&uid=..">
+            // 类名全是 tailwind 的 hover: 样式，只能靠 href 认
+            'a[href*="forum/personal"]', 'a[href*="uid="]', '[data-forum-user]',
             '[class*="author"]', '[class*="nick"]', '[class*="avatar"]',
             '[class*="user-name"]', '[class*="userName"]', '[class*="username"]',
             '[class*="user"] [class*="name"]', '[class*="user"]',
@@ -1029,6 +1051,13 @@
     // 楼层里的点赞数。取「属性优先、文本兜底、多条取最大」，
     // 认不出来时返回 null（而不是 0），好让上层区分「0 个赞」和「没解析到」。
     function readLikeCount(item) {
+        // 新版论坛：赞数就是「赞同」按钮的文本，比按类名猜可靠得多
+        var agree = null;
+        try { agree = item.querySelector('[aria-label="赞同"], [aria-label="赞"]'); } catch (e) { agree = null; }
+        if (agree) {
+            var agreeN = firstNumberInText(agree.textContent);
+            if (agreeN !== null) return agreeN;
+        }
         var els = collectCandidates(item, DISCUSS.likeSelectors, 30);
         var best = null;
         for (var i = 0; i < els.length; i++) {
@@ -1076,6 +1105,7 @@
 
     function readTimeInfo(item) {
         var els = collectCandidates(item, DISCUSS.timeSelectors, 20);
+        var firstText = '';
         for (var i = 0; i < els.length; i++) {
             var attr = els[i].getAttribute ? els[i].getAttribute('datetime') : null;
             if (attr) {
@@ -1084,11 +1114,22 @@
             }
             var t = cleanText(els[i].textContent);
             if (!t) continue;
+            if (!firstText) firstText = t;
             var ts = parseTimeToMs(t);
             if (ts !== null) return { text: t, ts: ts };
-            if (i === 0) return { text: t, ts: null };
         }
-        return { text: '', ts: null };
+        // 新版论坛把时间放在 <span class="text-xs text-neutral-400"> 里，
+        // 类名里既没有 time 也没有 date，只能按文本形态认。
+        var all, k;
+        try { all = item.querySelectorAll('span, a, div, p, time, small, em'); } catch (e) { all = []; }
+        for (k = 0; k < all.length && k < 80; k++) {
+            var tx = cleanText(all[k].textContent);
+            if (!tx || tx.length > 30) continue;
+            if (!/20\d{2}\s*[年/.-]|\d{1,2}月\d{1,2}日|刚刚|分钟前|小时前|昨天/.test(tx)) continue;
+            var tms = parseTimeToMs(tx);
+            if (tms !== null) return { text: tx, ts: tms };
+        }
+        return { text: firstText, ts: null };
     }
 
     // 正文节点判定：作者名 / 时间 / 点赞条这些元信息不是正文，
@@ -1097,6 +1138,33 @@
         var cls = (typeof el.className === 'string') ? el.className : '';
         if (DISCUSS.metaClass.test(cls)) return true;
         return !!(el.closest && el.closest('time, [class*="time"], [class*="like"], [class*="praise"]'));
+    }
+
+    // 节点是否落在动作栏 / 元信息区里（昵称、时间、赞踩、举报都在那里）。
+    // root 自己命中这类类名时不算——否则整个楼层被判成动作栏就没得解析了。
+    function inNoiseZone(node, root) {
+        if (!node || !node.closest) return false;
+        for (var i = 0; i < DISCUSS.noiseZoneSelectors.length; i++) {
+            var z;
+            try { z = node.closest(DISCUSS.noiseZoneSelectors[i]); } catch (e) { continue; }
+            if (z && z !== root) return true;
+        }
+        return false;
+    }
+
+    // 去掉动作栏之后的整层文本。新版论坛的 textContent 是
+    // 「正文 + 昵称 + 时间 + 0 0 评论(0) 举报」拼起来的，
+    // 挨个片段剥容易卡在纯数字上，直接克隆一份把动作栏整块摘掉最干净。
+    function textWithoutMeta(el) {
+        var clone;
+        try { clone = el.cloneNode(true); } catch (e) { return cleanText(el.textContent); }
+        var sels = DISCUSS.noiseZoneSelectors.join(',');
+        var junk;
+        try { junk = clone.querySelectorAll(sels); } catch (e) { junk = []; }
+        for (var i = 0; i < junk.length; i++) {
+            if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
+        }
+        return cleanText(clone.textContent);
     }
 
     // 楼层里的元信息文本（昵称、头像替代文字、时间、点赞数）。
@@ -1112,7 +1180,8 @@
             var cls = (typeof el.className === 'string') ? el.className : '';
             var isMeta = tag === 'TIME' || tag === 'IMG' || tag === 'SVG' || tag === 'I'
                 || DISCUSS.noiseClass.test(cls)
-                || /^(name|u-name|user-name|username|nick-name)$/i.test(cls);
+                || /^(name|u-name|user-name|username|nick-name)$/i.test(cls)
+                || inNoiseZone(el, item);
             if (!isMeta) continue;
             var t = cleanText(el.textContent);
             if (!t || t.length > 30) continue;          // 太长的多半是包裹层，不是元信息
@@ -1152,9 +1221,12 @@
             for (var i = 0; i < hit.length; i++) {
                 var t = cleanText(hit[i].textContent);
                 if (!t || t.length > 30) continue;
-                if (/^\d/.test(t)) continue;                // 时间、楼层号
-                if (/^\d{4}[-/.]\d{1,2}/.test(t)) continue; // 日期
+                if (/^\d+$/.test(t)) continue;               // 楼层号、纯数字学号
+                if (/^\d{4}\s*[-/.年]\s*\d{1,2}/.test(t)) continue; // 日期
                 if (isPlaceholderText(t)) continue;
+                // 新版的昵称是「312420030212软件2402王千硕」——学号打头，
+                // 所以不能一看到数字开头就排除，能读出中文/字母就算昵称
+                if (!/[\u4e00-\u9fa5a-zA-Z]/.test(t)) continue;
                 return t;
             }
         }
@@ -1168,6 +1240,9 @@
         var viable = [], i, s;
 
         for (i = 0; i < cands.length; i++) {
+            // 动作栏里的 p / span 也是 text-sm、也够长，必须按区块挡掉，
+            // 否则命中的就是「昵称 + 时间」那一条
+            if (inNoiseZone(cands[i], el)) continue;
             if (looksLikeMeta(cands[i])) continue;
             var raw = cleanText(cands[i].textContent);
             if (!raw || raw.length > 1500) continue;
@@ -1188,9 +1263,9 @@
             return { text: best, viaContent: true, author: author };
         }
 
-        // 没有正文型子节点：退到整层文本，但必须先剥掉昵称/时间，
-        // 且剥完仍要像正文——否则发出去的就是一句「张三」。
-        var selfText = stripMetaText(cleanText(el.textContent), metas);
+        // 没有正文型子节点：退到整层文本，但先把动作栏整块摘掉，
+        // 再剥首尾元信息——否则发出去的就是一句「张三 2026-10-31 23:48」。
+        var selfText = stripMetaText(textWithoutMeta(el), metas);
         if (selfText.length >= CONFIG.DISCUSS_MIN_LEN && selfText.length <= 1500
             && !isPlaceholderText(selfText) && (!author || selfText !== author)) {
             return { text: selfText, viaContent: false, author: author };
@@ -1220,6 +1295,10 @@
     function parseReplyItems() {
         var lists = collectCandidates(document, DISCUSS.listSelectors, 40);
         var i, items;
+        // 取「解析出的条数最多」的容器，而不是第一个成功的：
+        // 新版论坛里 forum-* 的包裹层有很多，先命中的可能只是某条回复的卡片，
+        // 只认第一个会漏掉同页其余楼层。
+        var best = null;
         for (i = 0; i < lists.length; i++) {
             var raw = keepOutermost(collectCandidates(lists[i], DISCUSS.itemSelectors, CONFIG.DISCUSS_MAX_ITEMS));
             items = [];
@@ -1227,10 +1306,15 @@
                 var it = parseReplyItem(raw[j], items.length, false);
                 if (it) items.push(it);
             }
-            if (items.length > 0) {
-                console.log('[MOOC讨论] 命中容器 ' + lists[i].className + '，解析到 ' + items.length + ' 条答复');
-                return { items: items, listEl: lists[i], viaList: true };
+            if (items.length > 0 && (!best || items.length > best.items.length)) {
+                var cls = typeof lists[i].className === 'string' ? lists[i].className : '';
+                best = { items: items, listEl: lists[i], viaList: true, cls: cls };
+                if (items.length >= 8) break;   // 已经够多，不必再试后面的容器
             }
+        }
+        if (best) {
+            console.log('[MOOC讨论] 命中容器 ' + best.cls + '，解析到 ' + best.items.length + ' 条答复');
+            return best;
         }
         // 容器全没命中：整页兜底，此时必须命中正文节点才算数
         var fallback = keepOutermost(collectCandidates(document, DISCUSS.itemSelectors, CONFIG.DISCUSS_MAX_ITEMS));
@@ -1249,10 +1333,19 @@
             var seenFloor = [];
             for (i = 0; i < votes.length && items.length < CONFIG.DISCUSS_MAX_ITEMS; i++) {
                 if (!isVisible(votes[i])) continue;
-                var floor = votes[i].closest
-                    ? votes[i].closest('[class*="reply"], [class*="comment"], [class*="post"], [class*="discuss"], [class*="floor"], li, .item')
-                    : null;
+                // 先找 article / 明确的楼层节点，最后才退到「任意含 reply 的容器」。
+                // 新版论坛的动作栏叫 forum-reply-actions，含 "reply" 也含 "actions"，
+                // 按老逻辑会把它当楼层，解析出来的正文就成了「昵称 + 时间」。
+                var floor = null;
+                if (votes[i].closest) {
+                    floor = votes[i].closest('article, li')
+                        || votes[i].closest('[class*="reply-item"], [class*="comment-item"], [class*="post-item"], [class*="floor"], [class*="reply-card"]')
+                        || votes[i].closest('[class*="reply"], [class*="comment"], [class*="post"], [class*="discuss"]');
+                }
                 if (!floor || seenFloor.indexOf(floor) !== -1) continue;
+                // 命中的是动作栏本身（而不是楼层）就直接跳过
+                var floorCls = typeof floor.className === 'string' ? floor.className : '';
+                if (/actions|toolbar|meta|footer/i.test(floorCls)) continue;
                 var it = parseReplyItem(floor, items.length, true);
                 if (it) { seenFloor.push(floor); items.push(it); }
             }

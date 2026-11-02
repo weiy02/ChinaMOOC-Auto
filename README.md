@@ -2,7 +2,7 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Platform](https://img.shields.io/badge/Platform-Tampermonkey-blue)
-![Version](https://img.shields.io/badge/Version-1.13.1-green)
+![Version](https://img.shields.io/badge/Version-1.13.2-green)
 ![当日下载量](https://img.shields.io/greasyfork/dd/595205)
 ![总下载量](https://img.shields.io/greasyfork/dt/595205)
 
@@ -237,6 +237,7 @@
 
 | 版本 | 要点 |
 |---|---|
+| 1.13.2 | 适配新版论坛（tailwind 版式）：楼层改为 `<article class="soft-shell">`，正文在上、昵称/时间/赞踩/举报装在 `forum-reply-actions` 里；按区块排除动作栏、靠 `href*=forum/personal` 认昵称、按文本形态认时间、按 `aria-label=赞同` 读赞数；多容器时取解析条数最多的那个，避免只拿到单条卡片 |
 | 1.13.1 | 「学习」页签提到第一位并作为默认页签；日志时间戳精确到分钟（去掉秒与毫秒）；讨论回复正文修正——把作者昵称、楼层时间、点赞数从正文里剥掉，只剩昵称的楼层直接判为无效不再当作内容发出；DOM 诊断新增【讨论正文解析实测】段落 |
 | 1.13.0 | 面板改为暗色扁平风格（纯色底、细边框、单一强调色、去掉毛玻璃与彩色圆点）；随堂测验说明、自动学习说明等解释文字全部移出面板，改为标题栏「?」按钮打开的使用说明浮层，覆盖全部功能 |
 | 1.12.0 | 自动学习不再跳过随堂测验：走到「测试」标签自动作答提交，**提交后停留 10 秒**再进下一个内容；同小节导航、跨小节/章节首项都不再跳过测验标签；单元测验/作业/考试页（独立路由、无内容标签栏）仍然零点击零提交 |
