@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.14.0
+// @version      1.14.1
 // @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
@@ -4205,6 +4205,10 @@
             var spocType = spocDetectContentType();
             if (spocType) return spocType;
         }
+        // 当前内容标签声明的类型最可靠，优先于任何 DOM 猜测。
+        // 切到「测试」时旧的文档查看器还在页面上，先看元素就会把测验判成文档。
+        var tabKind = contentKindFromTab(currentContentTab());
+        if (tabKind) { logDebug('type', tabKind + '：当前内容标签的类型标记命中'); return tabKind; }
         // 随堂测验的容器类名（LessonQuizUnit 等）比题块类名更稳定，
         // 新版页面题块常是普通 <article>，只看 questionItem 类会漏判
         if (PAGE_CONFIG.quizUrl.test(href) || hasVisibleQuestionBlocks() || lqScope()) { logDebug('type', 'quiz：URL 命中测验路由或检测到题目块'); return 'quiz'; }
@@ -4308,6 +4312,30 @@
     function currentContentTab() {
         var tabs = document.querySelectorAll('[role="tab"][aria-selected="true"]');
         for (var i = 0; i < tabs.length; i++) if (isVisible(tabs[i])) return tabs[i];
+        return null;
+    }
+
+    // 内容标签自带的类型标记。平台给每个内容标签画了图标：
+    //   <button role="tab" aria-label="测试"><svg data-lesson-type-icon="quiz">
+    //   <button role="tab" aria-label="课件"><svg data-lesson-type-icon="pdf">
+    // 这比「页面上出现了什么元素」可靠得多：切换标签时旧内容的 DOM 往往
+    // 还留在页面里（文档查看器尤其明显），只看元素会把测验页判成文档，
+    // 然后「文档没有翻页按钮」→ 立刻跳走，测验就被这样跳过了。
+    function contentKindFromTab(tab) {
+        if (!tab) return null;
+        var icon = (tab.getAttribute && tab.getAttribute('data-lesson-type-icon')) || '';
+        if (!icon) {
+            var svg = null;
+            try { svg = tab.querySelector('[data-lesson-type-icon]'); } catch (e) { svg = null; }
+            if (svg) icon = svg.getAttribute('data-lesson-type-icon') || '';
+        }
+        var label = (tab.getAttribute && (tab.getAttribute('aria-label') || '')) || '';
+        var txt = cleanText(tab.textContent || '');
+        var s = (icon + ' ' + label + ' ' + txt).toLowerCase();
+        if (/quiz|exam|test|测验|测试|自测|小测|作业/.test(s)) return 'quiz';
+        if (/video|视频|音频/.test(s)) return 'video';
+        if (/discuss|forum|bbs|讨论/.test(s)) return 'discussion';
+        if (/pdf|ppt|pptx|doc|word|excel|课件|文档|讲义|附件|资料/.test(s)) return 'doc';
         return null;
     }
 
@@ -4779,8 +4807,29 @@
     // 视频/文档/讨论/富文本正文任一出现即算就绪；超时仍未出现 → 返回 false（按加载失败处理）。
     async function waitContentReady(timeout) {
         var t0 = Date.now();
+        // 按「当前标签声明的类型」等对应元素，而不是等「页面上随便冒出什么」。
+        // 切到「测试」标签时，上一个文档的查看器往往还挂在页面上，
+        // 用通用判定会 1ms 就绪、然后被当成文档处理掉。
+        var kind = contentKindFromTab(currentContentTab());
+        if (kind) logDebug('load', '按当前内容标签类型等待：' + kind);
         while (Date.now() - t0 < timeout) {
             if (taskState.cancelled) return false;
+            if (kind === 'quiz') {
+                if (hasVisibleQuestionBlocks() || lqScope()) { logDebug('load', '内容就绪：题目块（' + (Date.now() - t0) + 'ms）'); return true; }
+                await sleep(500);
+                continue;
+            }
+            if (kind === 'video') {
+                if (findVideo()) { logDebug('load', '内容就绪：video（' + (Date.now() - t0) + 'ms）'); return true; }
+                await sleep(500);
+                continue;
+            }
+            if (kind === 'doc') {
+                if (findDocViewer()) { logDebug('load', '内容就绪：文档查看器（' + (Date.now() - t0) + 'ms）'); return true; }
+                await sleep(500);
+                continue;
+            }
+            // 标签没给出类型（老版页面 / SPOC）：沿用原来的「任一元素出现即就绪」
             if (findVideo()) { logDebug('load', '内容就绪：video（' + (Date.now() - t0) + 'ms）'); return true; }
             if (findDocViewer()) { logDebug('load', '内容就绪：文档查看器（' + (Date.now() - t0) + 'ms）'); return true; }
             if (looksLikeDiscussionPage()) { logDebug('load', '内容就绪：讨论页（' + (Date.now() - t0) + 'ms）'); return true; }
@@ -4789,7 +4838,7 @@
             if (hasVisibleContentBody()) { logDebug('load', '内容就绪：富文本/标题页正文（' + (Date.now() - t0) + 'ms）'); return true; }
             await sleep(500);
         }
-        logDebug('load', '⚠️ 内容加载超时（' + timeout + 'ms 内未见任何正文）');
+        logDebug('load', '⚠️ 内容加载超时（' + timeout + 'ms 内未见任何正文）' + (kind ? '（标签类型=' + kind + '）' : ''));
         return false;
     }
 
@@ -4812,8 +4861,18 @@
         if (taskState.cancelled) { learnClearState(); setFloatVisible(false); return; }
         var type;
         if (!ready) {
-            updateStatus('⚠️ 内容加载超时（15 秒未渲染出来），按加载失败跳过...');
-            type = 'missing';
+            // 内容迟迟没渲染：若内容标签明确说了类型，就按该类型继续，
+            // 让下游（如随堂测验的等待窗口）再争取一次，而不是直接判「加载失败」跳过。
+            var lateKind = contentKindFromTab(currentContentTab());
+            if (lateKind) {
+                type = lateKind;
+                var kindName = { quiz: '测验', video: '视频', doc: '文档', discussion: '讨论' }[lateKind] || lateKind;
+                logDebug('load', '内容就绪超时，但当前标签类型=' + lateKind + '，按该类型继续');
+                updateStatus('⚠️ 内容渲染较慢，按标签类型（' + kindName + '）继续尝试...');
+            } else {
+                updateStatus('⚠️ 内容加载超时（15 秒未渲染出来），按加载失败跳过...');
+                type = 'missing';
+            }
         } else {
             type = detectContentType();
         }
