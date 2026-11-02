@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.13.2
+// @version      1.13.3
 // @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
@@ -1728,17 +1728,100 @@
     function escHtml(s) {
         return String(s === null || s === undefined ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
+
+    // 一条日志的 HTML：行号 + 时间 + 分类 + 正文。
+    // 行号是「第几条」，不是「本屏第几条」——滚到中间也能对上弹窗里的位置。
+    function logLineHtml(l, no) {
+        return '<div class="mar-log-line">'
+            + '<span class="mar-log-n">' + no + '</span>'
+            + '<span class="mar-log-body"><span class="mar-log-t">' + l.t + '</span>'
+            + '[<span class="mar-log-cat">' + l.cat + '</span>] ' + escHtml(l.msg) + '</span>'
+            + '</div>';
+    }
+
     function refreshLogBox() {
         var box = document.getElementById('mar-log-box');
-        if (!box || !box.parentElement.classList.contains('mar-active')) return;
+        if (!box) return;
+        // 日志框外面还套了一层 .mar-log-wrap（放右上角展开键），
+        // 所以不能只看 parentElement，要往上找到页签本身
+        var pane = box.closest ? box.closest('.mar-pane') : null;
+        if (!pane || !pane.classList.contains('mar-active')) {
+            // 页签没显示就不重绘面板，但弹窗可能正开着，得跟着刷
+            refreshLogOverlay();
+            return;
+        }
         var frag = [];
         var start = Math.max(0, debugLogs.length - DEBUG_LOG_SHOW);
         for (var i = start; i < debugLogs.length; i++) {
-            var l = debugLogs[i];
-            frag.push('<div class="mar-log-line"><span class="mar-log-t">' + l.t + '</span>[<span class="mar-log-cat">' + l.cat + '</span>] ' + escHtml(l.msg) + '</div>');
+            frag.push(logLineHtml(debugLogs[i], i + 1));
         }
         box.innerHTML = frag.length ? frag.join('') : '<div class="mar-log-empty">（暂无日志）</div>';
         try { box.scrollTop = box.scrollHeight; } catch (e) {}
+        refreshLogOverlay();
+    }
+
+    // ===================== 日志弹窗（展开查看） =====================
+    // 面板里的日志框只有 150px 高、最多 120 条，翻起来很难受。
+    // 点日志框右上角那个展开键，弹出居中大窗看全部（最多 DEBUG_LOG_MAX 条）。
+    function logOverlayEl() { return document.getElementById('mar-log-overlay'); }
+
+    function refreshLogOverlay() {
+        var overlay = logOverlayEl();
+        var full = document.getElementById('mar-log-full');
+        if (!overlay || !full || overlay.style.display === 'none') return;
+        // 用户正往上翻的时候别把他拽回底部；只有原本就在底部才自动跟最新
+        var keep = full.scrollTop;
+        var atBottom = full.scrollHeight - keep - full.clientHeight <= 24;
+        var frag = [];
+        for (var i = 0; i < debugLogs.length; i++) frag.push(logLineHtml(debugLogs[i], i + 1));
+        full.innerHTML = frag.length ? frag.join('') : '<div class="mar-log-empty">（暂无日志）</div>';
+        var title = document.getElementById('mar-log-title');
+        if (title) title.textContent = '调试日志 · 共 ' + debugLogs.length + ' 条';
+        try { full.scrollTop = atBottom ? full.scrollHeight : keep; } catch (e) {}
+    }
+
+    function openLogOverlay() {
+        var overlay = logOverlayEl();
+        if (!overlay) return;
+        overlay.style.display = 'flex';
+        var full = document.getElementById('mar-log-full');
+        if (full) full.scrollTop = full.scrollHeight;
+        refreshLogOverlay();
+    }
+
+    function closeLogOverlay() {
+        var overlay = logOverlayEl();
+        if (overlay) overlay.style.display = 'none';
+    }
+
+    function createLogOverlay() {
+        if (logOverlayEl()) return;
+        var overlay = document.createElement('div');
+        overlay.id = 'mar-log-overlay';
+        overlay.style.display = 'none';
+        overlay.innerHTML = [
+            '<div id="mar-log-card">',
+            '  <div id="mar-log-head">',
+            '    <span id="mar-log-title">调试日志</span>',
+            '    <span id="mar-log-head-actions">',
+            '      <button id="mar-log-full-copy" class="mar-btn">复制全部</button>',
+            '      <button id="mar-log-close" title="关闭">×</button>',
+            '    </span>',
+            '  </div>',
+            '  <div id="mar-log-full" class="mar-log-full"></div>',
+            '</div>'
+        ].join('');
+        document.body.appendChild(overlay);
+
+        // 点遮罩空白处关闭；点卡片内部不关
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) closeLogOverlay();
+        });
+        document.getElementById('mar-log-close').addEventListener('click', closeLogOverlay);
+        document.getElementById('mar-log-full-copy').addEventListener('click', copyDebugLogs);
+        document.addEventListener('keydown', function (e) {
+            if ((e.key === 'Escape' || e.key === 'Esc') && overlay.style.display === 'flex') closeLogOverlay();
+        });
     }
 
     function clearDebugLogs() {
@@ -1781,8 +1864,8 @@
             // 开关类按钮（解除复制）与任务状态无关，
             // 任务跑着的时候也应该能随时切换
             if (el.classList.contains('mar-toggle')) continue;
-            // 日志按钮同理：跑着的时候也需要能复制/清空日志排查问题
-            if (el.id === 'mar-log-copy' || el.id === 'mar-log-clear') continue;
+            // 日志按钮同理：跑着的时候也需要能复制/清空/展开排查问题
+            if (el.id === 'mar-log-copy' || el.id === 'mar-log-clear' || el.id === 'mar-log-expand') continue;
             el.disabled = isRunning;
         }
         var stop = document.getElementById('mar-stop');
@@ -1870,10 +1953,54 @@
             '  font-size: 10.5px; line-height: 1.5;',
             '  color: #d4d4d8; white-space: pre-wrap; word-break: break-all;',
             '}',
-            '.mar-log-line { margin: 1px 0; }',
+            '.mar-log-line { display: flex; align-items: flex-start; gap: 5px; margin: 1px 0; }',
+            '.mar-log-n {',
+            '  flex: 0 0 auto; min-width: 22px; text-align: right;',
+            '  color: #52525b; user-select: none; font-variant-numeric: tabular-nums;',
+            '}',
+            '.mar-log-body { flex: 1 1 auto; }',
             '.mar-log-t { color: #6b6b75; margin-right: 4px; }',
             '.mar-log-cat { color: #60a5fa; font-weight: 600; }',
             '.mar-log-empty { color: #6b6b75; padding: 8px 2px; }',
+            // 日志弹窗：居中的大窗，内容可滚动、可选中复制
+            '#mar-log-overlay {',
+            '  position: fixed !important; inset: 0;',
+            '  z-index: 2147483647 !important;',
+            '  align-items: center; justify-content: center;',
+            '  background: rgba(0, 0, 0, 0.6);',
+            '  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;',
+            '}',
+            '#mar-log-card {',
+            '  width: min(780px, 92vw); max-height: 84vh;',
+            '  display: flex; flex-direction: column; overflow: hidden;',
+            '  background: #18181b; color: #ededed;',
+            '  border: 1px solid rgba(255, 255, 255, 0.1);',
+            '  border-radius: 14px;',
+            '  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.7);',
+            '}',
+            '#mar-log-head {',
+            '  display: flex; justify-content: space-between; align-items: center;',
+            '  padding: 12px 14px;',
+            '  border-bottom: 1px solid rgba(255, 255, 255, 0.07);',
+            '  font-size: 13px; font-weight: 600;',
+            '}',
+            '#mar-log-head-actions { display: flex; align-items: center; gap: 6px; }',
+            '#mar-log-full-copy { width: auto; padding: 5px 10px; font-size: 11.5px; }',
+            '#mar-log-close {',
+            '  width: 24px; height: 24px; padding: 0;',
+            '  display: flex; align-items: center; justify-content: center;',
+            '  border: 0; border-radius: 6px; background: transparent;',
+            '  color: #8a8a90; font-family: inherit; font-size: 16px; line-height: 1;',
+            '  cursor: pointer;',
+            '}',
+            '#mar-log-close:hover { background: rgba(255, 255, 255, 0.08); color: #ededed; }',
+            '#mar-log-full {',
+            '  padding: 10px 14px 14px; overflow-y: auto;',
+            '  font-family: Menlo, Consolas, "SF Mono", monospace;',
+            '  font-size: 11.5px; line-height: 1.65; color: #d4d4d8;',
+            '  white-space: pre-wrap; word-break: break-all;',
+            '  user-select: text;',
+            '}',
             '#mar-copy-unlock.mar-on:not(:disabled) { color: #4ade80; background: rgba(74, 222, 128, 0.1); }',
             '#mar-copy-unlock.mar-on:hover:not(:disabled) { background: rgba(74, 222, 128, 0.16); }',
             '.mar-field {',
@@ -2067,7 +2194,7 @@
         '</ul>',
         '<h4>日志与诊断</h4>',
         '<ul>',
-        '<li>「日志」页记录检测结果、跳转决策与异常，遇到问题切过去复制出来（时间精确到分钟）。</li>',
+        '<li>「日志」页记录检测结果、跳转决策与异常，每条带行号（时间精确到分钟）。点「展开」弹窗看全部日志，可选中复制。</li>',
         '<li>「页面 DOM 诊断」导出当前页面结构快照，用于适配改版后的页面。其中的【讨论正文解析实测】会逐条列出楼层原文、识别到的作者名、以及最终会发出去的正文——讨论回复内容不对时，先看这一段。</li>',
         '</ul>',
         '<h4>设置</h4>',
@@ -2158,6 +2285,7 @@
             '      <div style="display:flex;gap:6px;">',
             '        <button id="mar-log-copy" class="mar-btn" style="flex:1;">复制日志</button>',
             '        <button id="mar-log-clear" class="mar-btn" style="flex:1;">清空</button>',
+            '        <button id="mar-log-expand" class="mar-btn" style="flex:0 0 46px;" title="弹窗查看全部日志">展开</button>',
             '      </div>',
             '      <div id="mar-log-box" class="mar-log-box">（暂无日志）</div>',
             '    </div>',
@@ -2185,6 +2313,7 @@
         ].join('');
         document.body.appendChild(panel);
         createHelpOverlay();
+        createLogOverlay();
 
         statusEl = document.getElementById('mar-status');
 
@@ -2267,11 +2396,13 @@
         document.getElementById('mar-lesson-quiz').addEventListener('click', function () { guard(completeLessonQuiz); });
         document.getElementById('mar-learn-probe').addEventListener('click', function () { guard(probeDiscussionDom); });
 
-        // 日志页签：复制 / 清空
+        // 日志页签：复制 / 清空 / 展开
         var logCopy = document.getElementById('mar-log-copy');
         var logClear = document.getElementById('mar-log-clear');
         if (logCopy) logCopy.addEventListener('click', copyDebugLogs);
         if (logClear) logClear.addEventListener('click', clearDebugLogs);
+        var logExpand = document.getElementById('mar-log-expand');
+        if (logExpand) logExpand.addEventListener('click', openLogOverlay);
         var logTab = document.querySelector('.mar-tab[data-tab="log"]');
         if (logTab) logTab.addEventListener('click', function () { setTimeout(refreshLogBox, 30); });
 
@@ -2789,7 +2920,7 @@
         for (i = 0; i < cands.length && out.length < LESSON_QUIZ.MAX_BLOCKS; i++) {
             var el = cands[i];
             if (!isVisible(el)) continue;
-            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay')) continue;
+            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-log-overlay')) continue;
             if (!el.querySelector(inputSel)) continue;
             // 老版单元测验/作业的题块，明确不碰
             if (el.querySelector('.u-questionItem')) continue;
@@ -3127,7 +3258,7 @@
             for (var i = 0; i < els.length; i++) {
                 var el = els[i];
                 if (!isVisible(el) || el.disabled) continue;
-                if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-float-next')) continue;
+                if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-log-overlay, #mar-float-next')) continue;
                 var t = cleanText(el.textContent || el.value || '');
                 if (LESSON_QUIZ.SUBMIT_TEXT.test(t)) return el;
             }
@@ -3155,7 +3286,7 @@
             var dlg = dlgs[d];
             if (!isVisible(dlg)) continue;
             if (dlg.clientWidth < 160 || dlg.clientHeight < 80) continue;
-            if (dlg.closest && dlg.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay')) continue;
+            if (dlg.closest && dlg.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-log-overlay')) continue;
             var btns = dlg.querySelectorAll('button, [role="button"], a, input[type="submit"]');
             for (var b = 0; b < btns.length; b++) {
                 if (!isVisible(btns[b]) || btns[b].disabled) continue;
@@ -3175,7 +3306,7 @@
         for (var i = 0; i < els.length; i++) {
             var el = els[i];
             if (!isVisible(el) || el.clientWidth < 160) continue;
-            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay')) continue;
+            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-log-overlay')) continue;
             var t = cleanText(el.textContent || '');
             if (!t || t.length > 300) continue;
             if (/正确率|答对|答错|得分|本次得分|共\s*\d+\s*题/.test(t)) return t.slice(0, 120);
