@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.13.0
+// @version      1.13.1
 // @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
@@ -948,6 +948,18 @@
         placeholderText: /请输入|说点什么|写下|来说两句|回复一下|发表你的|添加回复|写回复|期待你的|分享你的/,
         // 元信息节点（作者名 / 时间 / 点赞条），正文提取时要避开
         metaClass: /name|author|user|avatar|nick|time|date|like|praise|vote|agree|tool|oper|action/i,
+
+        // 作者昵称所在节点。只用来「认出这串字是作者名」，不参与正文拼装。
+        authorSelectors: [
+            '[class*="author"]', '[class*="nick"]', '[class*="avatar"]',
+            '[class*="user-name"]', '[class*="userName"]', '[class*="username"]',
+            '[class*="user"] [class*="name"]', '[class*="user"]',
+            '.f-fl', 'a',
+        ],
+
+        // 要从正文里剔掉的元信息片段：昵称 / 时间 / 点赞数 / 楼层号。
+        // 特意不含 tool|oper|action——那多是「回复」「举报」按钮，会误伤正文。
+        noiseClass: /author|avatar|nick|user-name|username|userName|time|date|like|praise|vote|agree/i,
     };
 
     function getDiscussSource() {
@@ -1087,36 +1099,103 @@
         return !!(el.closest && el.closest('time, [class*="time"], [class*="like"], [class*="praise"]'));
     }
 
-    function pickContent(el) {
-        var cands = collectCandidates(el, DISCUSS.contentSelectors, 40);
-        var viable = [], i;
-        for (i = 0; i < cands.length; i++) {
-            var t = cleanText(cands[i].textContent);
-            if (t.length < CONFIG.DISCUSS_MIN_LEN || t.length > 1500) continue;
-            if (isPlaceholderText(t)) continue;
-            viable.push(cands[i]);
+    // 楼层里的元信息文本（昵称、头像替代文字、时间、点赞数）。
+    // 正文提取后要把这些片段从文本里剥掉——整层兜底时 textContent 是
+    // 「昵称 时间 正文」拼在一起的，直接发出去就成了回复别人的昵称。
+    function collectMetaTexts(item) {
+        var out = [];
+        var nodes = [];
+        try { nodes = item.querySelectorAll('*'); } catch (e) { return out; }
+        for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            var tag = String(el.tagName || '').toUpperCase();
+            var cls = (typeof el.className === 'string') ? el.className : '';
+            var isMeta = tag === 'TIME' || tag === 'IMG' || tag === 'SVG' || tag === 'I'
+                || DISCUSS.noiseClass.test(cls)
+                || /^(name|u-name|user-name|username|nick-name)$/i.test(cls);
+            if (!isMeta) continue;
+            var t = cleanText(el.textContent);
+            if (!t || t.length > 30) continue;          // 太长的多半是包裹层，不是元信息
+            if (out.indexOf(t) === -1) out.push(t);
         }
-        var pool = [];
-        for (i = 0; i < viable.length; i++) {
-            if (!looksLikeMeta(viable[i])) pool.push(viable[i]);
-        }
-        if (pool.length === 0) pool = viable;
+        return out;
+    }
 
-        if (pool.length === 0) {
-            // 没有正文型子节点时退到整层文本，但只在长度合理时接受
-            var self = cleanText(el.textContent);
-            if (self.length >= CONFIG.DISCUSS_MIN_LEN && self.length <= 1500 && !isPlaceholderText(self)) {
-                return { text: self, viaContent: false };
+    // 从文本里剥掉落在开头 / 结尾的元信息片段。
+    // 只剥首尾，不动中间——正文里出现「张三」是正常的，删掉反而改错了内容。
+    function stripMetaText(text, metas) {
+        var t = cleanText(text);
+        var pass = 0, changed = true;
+        while (changed && pass++ < 10) {
+            changed = false;
+            for (var i = 0; i < metas.length && t; i++) {
+                var m = cleanText(metas[i]);
+                if (!m || m.length > 30) continue;
+                if (/^\d+$/.test(m)) continue;          // 点赞数 / 楼层号是纯数字，剥了容易误伤正文
+                if (t === m) { t = ''; changed = true; break; }
+                if (t.indexOf(m) === 0) { t = cleanText(t.slice(m.length)); changed = true; break; }
+                if (t.length > m.length && t.slice(t.length - m.length) === m) {
+                    t = cleanText(t.slice(0, t.length - m.length));
+                    changed = true;
+                    break;
+                }
             }
-            return null;
         }
-        // 取最长的：同一层里可能有摘要、折叠态之类的短副本
-        var best = pool[0], bestLen = cleanText(pool[0].textContent).length;
-        for (i = 1; i < pool.length; i++) {
-            var len = cleanText(pool[i].textContent).length;
-            if (len > bestLen) { best = pool[i]; bestLen = len; }
+        return cleanText(t.replace(/^[：:，,、·•\-\u200b\s]+/, ''));
+    }
+
+    // 认作者昵称。只用于「这串字是昵称」的判断和预览展示，不参与正文。
+    function readAuthor(item) {
+        for (var s = 0; s < DISCUSS.authorSelectors.length; s++) {
+            var hit;
+            try { hit = item.querySelectorAll(DISCUSS.authorSelectors[s]); } catch (e) { continue; }
+            for (var i = 0; i < hit.length; i++) {
+                var t = cleanText(hit[i].textContent);
+                if (!t || t.length > 30) continue;
+                if (/^\d/.test(t)) continue;                // 时间、楼层号
+                if (/^\d{4}[-/.]\d{1,2}/.test(t)) continue; // 日期
+                if (isPlaceholderText(t)) continue;
+                return t;
+            }
         }
-        return { text: cleanText(best.textContent), viaContent: true };
+        return '';
+    }
+
+    function pickContent(el) {
+        var metas = collectMetaTexts(el);
+        var author = readAuthor(el);
+        var cands = collectCandidates(el, DISCUSS.contentSelectors, 40);
+        var viable = [], i, s;
+
+        for (i = 0; i < cands.length; i++) {
+            if (looksLikeMeta(cands[i])) continue;
+            var raw = cleanText(cands[i].textContent);
+            if (!raw || raw.length > 1500) continue;
+            if (isPlaceholderText(raw)) continue;
+            var t = stripMetaText(raw, metas);
+            if (t.length < CONFIG.DISCUSS_MIN_LEN) continue;  // 剥完还没昵称长，就不是正文
+            if (isPlaceholderText(t)) continue;
+            if (author && t === author) continue;             // 候选就是昵称本身
+            viable.push(t);
+        }
+
+        if (viable.length > 0) {
+            // 取最长的：同一层里可能有摘要、折叠态之类的短副本
+            var best = viable[0];
+            for (s = 1; s < viable.length; s++) {
+                if (viable[s].length > best.length) best = viable[s];
+            }
+            return { text: best, viaContent: true, author: author };
+        }
+
+        // 没有正文型子节点：退到整层文本，但必须先剥掉昵称/时间，
+        // 且剥完仍要像正文——否则发出去的就是一句「张三」。
+        var selfText = stripMetaText(cleanText(el.textContent), metas);
+        if (selfText.length >= CONFIG.DISCUSS_MIN_LEN && selfText.length <= 1500
+            && !isPlaceholderText(selfText) && (!author || selfText !== author)) {
+            return { text: selfText, viaContent: false, author: author };
+        }
+        return null;
     }
 
     // 单条楼层 → 结构化记录。strict 时要求必须命中正文节点（整页兜底模式用，
@@ -1130,6 +1209,7 @@
             el: el,
             index: index,
             text: content.text,
+            author: content.author || '',
             likes: readLikeCount(el),
             timeText: time.text,
             ts: time.ts,
@@ -1423,6 +1503,7 @@
         lines.push('楼层总数：' + r.items.length + ' 条'
             + (r.viaList ? '' : '   ⚠️ 未命中已知的回复列表容器，为整页兜底解析结果'));
         lines.push('选中楼层：第 ' + (r.item.index + 1) + ' 条'
+            + (r.item.author ? '，作者「' + r.item.author + '」（已从正文剔除）' : '，作者识别不到')
             + (r.item.likes !== null ? '，点赞 ' + r.item.likes : '，点赞数未解析到')
             + (r.item.timeText ? '，时间 ' + r.item.timeText : ''));
         lines.push('');
@@ -1542,7 +1623,8 @@
     // 追加一条调试日志。cat 是分类标签（type/nav/menu/learn/video/doc/quiz/status/err…）
     function logDebug(cat, msg) {
         var t = new Date();
-        var ts = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2) + ':' + ('0' + t.getSeconds()).slice(-2) + '.' + ('00' + t.getMilliseconds()).slice(-3);
+        // 精确到分钟就够了：秒和毫秒在这个场景里没人看，还把每行挤得很长
+        var ts = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2);
         debugLogs.push({ t: ts, cat: cat, msg: String(msg || '') });
         if (debugLogs.length > DEBUG_LOG_MAX) debugLogs.splice(0, debugLogs.length - DEBUG_LOG_MAX);
         try { console.log('[MOOC:' + cat + ']', ts, msg); } catch (e) {}
@@ -1847,8 +1929,11 @@
     // 默认打开哪个选项卡，按页面内容定：看着像讨论页就给「讨论」，其余给「互评」。
     // 只在面板创建时判定一次——之后用户手动切到哪就是哪，不跟着 hash 导航乱跳。
     function pickDefaultTab() {
-        if (hasDiscussion()) return 'discuss';
-        return 'review';
+        // 学习是主功能，默认就停在「学习」页签上。
+        // 只有当地址明确指向讨论详情（hash 里带 forum/discuss/topic）时，
+        // 才自动让位给「讨论」——这是唯一能确定用户此刻在看讨论的可靠信号。
+        if (/forumdetail|forum|discuss|discussion|topic/i.test(location.hash || '')) return 'discuss';
+        return 'auto';
     }
 
     // ===================== 使用说明浮层 =====================
@@ -1889,8 +1974,8 @@
         '</ul>',
         '<h4>日志与诊断</h4>',
         '<ul>',
-        '<li>「日志」页记录检测结果、跳转决策与异常，遇到问题切过去复制出来。</li>',
-        '<li>「页面 DOM 诊断」导出当前页面结构快照，用于适配改版后的页面。</li>',
+        '<li>「日志」页记录检测结果、跳转决策与异常，遇到问题切过去复制出来（时间精确到分钟）。</li>',
+        '<li>「页面 DOM 诊断」导出当前页面结构快照，用于适配改版后的页面。其中的【讨论正文解析实测】会逐条列出楼层原文、识别到的作者名、以及最终会发出去的正文——讨论回复内容不对时，先看这一段。</li>',
         '</ul>',
         '<h4>设置</h4>',
         '<ul>',
@@ -1951,9 +2036,9 @@
             '</div>',
             '<div id="mar-main">',
             '  <div id="mar-tabs">',
+            '    <button class="mar-tab" data-tab="auto">学习</button>',
             '    <button class="mar-tab" data-tab="review">互评</button>',
             '    <button class="mar-tab" data-tab="discuss">讨论</button>',
-            '    <button class="mar-tab" data-tab="auto">学习</button>',
             '    <button class="mar-tab" data-tab="log">日志</button>',
             '    <button class="mar-tab" data-tab="settings">设置</button>',
             '  </div>',
@@ -4599,6 +4684,35 @@
             lines.push(key + '：命中 ' + hits.length + '（可见 ' + vis + '）');
         }
         lines.push('');
+        // 【讨论正文解析实测】——排查「回复出去的是别人的昵称」就看这一段：
+        // 逐条列出整层原文、识别到的作者、剥完元信息后真正会发出去的正文，
+        // 一眼能分清是「根本没取到正文」还是「取到了但没剥干净」。
+        lines.push('【讨论正文解析实测】');
+        var parsedDbg = parseReplyItems();
+        var dbgListCls = '';
+        if (parsedDbg.listEl) {
+            dbgListCls = typeof parsedDbg.listEl.className === 'string'
+                ? parsedDbg.listEl.className
+                : ((parsedDbg.listEl.getAttribute && parsedDbg.listEl.getAttribute('class')) || '');
+        }
+        lines.push('解析到楼层：' + parsedDbg.items.length + ' 条'
+            + (parsedDbg.viaList ? '（命中容器 class="' + dbgListCls.slice(0, 70) + '"）' : '（未命中已知容器，整页兜底）'));
+        var pdi;
+        for (pdi = 0; pdi < parsedDbg.items.length && pdi < 6; pdi++) {
+            var pdiItem = parsedDbg.items[pdi];
+            lines.push('  #' + (pdi + 1)
+                + ' 作者=「' + (pdiItem.author || '未识别') + '」'
+                + ' 点赞=' + (pdiItem.likes === null ? '未解析' : pdiItem.likes)
+                + ' 时间=' + (pdiItem.timeText || '未解析'));
+            lines.push('     整层原文：' + cleanText(pdiItem.el.textContent).slice(0, 120));
+            lines.push('     取用正文：' + pdiItem.text.slice(0, 120)
+                + '（' + (pdiItem.viaContent ? '命中正文节点' : '整层兜底') + '）');
+        }
+        if (parsedDbg.items.length === 0) lines.push('  （一条都没解析到）');
+        var dbgChosen = resolveReplyContent();
+        lines.push('  → 最终会发出去：' + (dbgChosen.ok ? dbgChosen.text.slice(0, 120) : '【不可用】' + dbgChosen.error));
+        lines.push('');
+
         var dumpSels = {
             '回复/评论容器': '[class*="reply"], [class*="comment"], [class*="discuss"], [class*="post"], [class*="floor"]',
             '编辑器': 'textarea, [contenteditable], [class*="editor"], [class*="Editor"]',
