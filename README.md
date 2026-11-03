@@ -1,12 +1,6 @@
 # 中国大学 MOOC 自动化脚本
 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Platform](https://img.shields.io/badge/Platform-Tampermonkey_%2F_ScriptCat-blue)
-![Version](https://img.shields.io/badge/Version-1.14.1-green)
-![GreasyFork Daily](https://img.shields.io/greasyfork/dd/595205?label=GreasyFork%20Daily)
-![GreasyFork Total](https://img.shields.io/greasyfork/dt/595205?label=GreasyFork%20Total)
-![ScriptCat Daily](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.today_install&label=ScriptCat%20Daily&color=orange)
-![ScriptCat Total](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.total_install&label=ScriptCat%20Total&color=orange)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![Version](https://img.shields.io/badge/Version-1.14.1-green) ![GreasyFork Daily](https://img.shields.io/greasyfork/dd/595205?label=GreasyFork%20Daily) ![GreasyFork Total](https://img.shields.io/greasyfork/dt/595205?label=GreasyFork%20Total) ![ScriptCat Daily](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.today_install&label=ScriptCat%20Daily&color=orange) ![ScriptCat Total](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.total_install&label=ScriptCat%20Total&color=orange)
 
 面向中国大学 MOOC / SPOC（icourse163.org）的用户脚本（Tampermonkey / 脚本猫均可用），自动识别两类课程并走对应前端分支，覆盖四大场景：**互评作业自动化、课堂讨论自动回复、随堂测验一键作答、整章自动学习**（视频 / 文档 / 测验 / 讨论全类型自动推进），并提供开发者调试日志与页面结构诊断，便于适配新版 UI。
 
