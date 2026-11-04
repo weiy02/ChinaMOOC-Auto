@@ -1,6 +1,6 @@
 # 中国大学 MOOC 自动化脚本
 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![Version](https://img.shields.io/badge/Version-1.14.1-green) ![GreasyFork Daily](https://img.shields.io/greasyfork/dd/595205?label=GreasyFork%20Daily) ![GreasyFork Total](https://img.shields.io/greasyfork/dt/595205?label=GreasyFork%20Total) ![ScriptCat Daily](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.today_install&label=ScriptCat%20Daily&color=orange) ![ScriptCat Total](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.total_install&label=ScriptCat%20Total&color=orange)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![Version](https://img.shields.io/badge/Version-1.14.2-green) ![GreasyFork Daily](https://img.shields.io/greasyfork/dd/595205?label=GreasyFork%20Daily) ![GreasyFork Total](https://img.shields.io/greasyfork/dt/595205?label=GreasyFork%20Total) ![ScriptCat Daily](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.today_install&label=ScriptCat%20Daily&color=orange) ![ScriptCat Total](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.total_install&label=ScriptCat%20Total&color=orange)
 
 面向中国大学 MOOC / SPOC（icourse163.org）的用户脚本（Tampermonkey / 脚本猫均可用），自动识别两类课程并走对应前端分支，覆盖四大场景：**互评作业自动化、课堂讨论自动回复、随堂测验一键作答、整章自动学习**（视频 / 文档 / 测验 / 讨论全类型自动推进），并提供开发者调试日志与页面结构诊断，便于适配新版 UI。
 
@@ -32,7 +32,7 @@
 | **互评** | 一键互评 / 快速互评 / 全自动互评 / 评分修复 |
 | **讨论** | 预览将回复的内容 / 一键回复当前讨论 / 当前来源 |
 | **日志** | 复制日志 / 清空 / 展开（弹窗看全部，带行号）/ 实时调试日志（时间只到分钟） |
-| **设置** | 讨论内容来源、视频倍速、解除复制限制、清除回复记录 |
+| **设置** | 讨论内容来源、视频倍速、解除复制限制、清除回复记录、**问题反馈**（一键打开 GitHub 新建 Issue） |
 
 **「学习」排在第一，也是默认打开的选项卡**——自动学习是这个脚本最主要的功能，打开面板就该看到它。
 
@@ -277,6 +277,7 @@
 
 | 版本 | 要点 |
 |---|---|
+| 1.14.2 | 设置页签新增「**问题反馈**」按钮，点击直接打开 GitHub 新建 Issue 页面（`issues/new`，新标签页打开）；该按钮用 `<a>` 实现，不受任务运行状态锁定的影响 |
 | 文档 | 徽章新增**脚本猫当日 / 总安装量**统计（脚本猫没有官方徽章接口，改读其脚本 API `scriptcat.org/api/v2/scripts/8833` 的 `today_install` / `total_install`，用 shields 动态 JSON 渲染）；使用方法拆出「一键安装（Greasy Fork / 脚本猫）」表格 |
 | 1.14.1 | 内容类型判定改为「以当前内容标签的类型图标为准」（`data-lesson-type-icon`），修复切换标签后残留的文档查看器让测验被误判成文档、进而被跳过的问题；`waitContentReady` 按标签声明的类型等对应元素；渲染超时但标签有类型时按该类型继续，不再直接判加载失败 |
 | 1.14.0 | 随堂测验识别修正：自动学习与「一键完成并提交」改用同一套判据（容器 + 题块），并在判定前给 8 秒等待窗口，解决「刚切到测试标签、题块还没渲染」被误判成单元测验而跳过的问题；新增跳转后强制停留 10 秒（`LEARN_JUMP_SETTLE_MS`），避免页面刚切换、DOM 还是上一份内容就开始判定而秒跳下一节 |

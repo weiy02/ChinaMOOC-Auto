@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.14.1
+// @version      1.14.2
 // @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
@@ -1874,6 +1874,8 @@
             if (el.classList.contains('mar-toggle')) continue;
             // 日志按钮同理：跑着的时候也需要能复制/清空/展开排查问题
             if (el.id === 'mar-log-copy' || el.id === 'mar-log-clear' || el.id === 'mar-log-expand') continue;
+            // 问题反馈是 <a>，本来就不该被任务状态锁住（出问题时正是要反馈）
+            if (el.id === 'mar-feedback') continue;
             el.disabled = isRunning;
         }
         var stop = document.getElementById('mar-stop');
@@ -1933,6 +1935,7 @@
             '.mar-btn {',
             '  display: flex; align-items: center;',
             '  width: 100%; padding: 8px 10px;',
+            '  box-sizing: border-box; text-decoration: none;',
             '  border: 1px solid transparent; border-radius: 8px;',
             '  background: rgba(255, 255, 255, 0.055);',
             '  color: #e4e4e7; font-family: inherit;',
@@ -2210,6 +2213,7 @@
         '<h4>设置</h4>',
         '<ul>',
         '<li>讨论内容来源、视频倍速（0.5x ~ 3x）、解除页面复制限制、清除讨论回复记录。</li>',
+        '<li><b>问题反馈</b>：点一下直接打开 GitHub 的新建 Issue 页面。反馈时请附上「日志」里相关的几行，以及「页面 DOM 诊断」导出的结构，定位会快很多。</li>',
         '</ul>',
         '<h4>课程类型</h4>',
         '<ul>',
@@ -2313,6 +2317,7 @@
             '      </div>',
             '      <button id="mar-copy-unlock" class="mar-btn mar-toggle">解除复制限制：关</button>',
             '      <button id="mar-discuss-clear" class="mar-btn">清除回复记录</button>',
+            '      <a id="mar-feedback" class="mar-btn" href="https://github.com/weiy02/ChinaMOOC-Auto/issues/new" target="_blank" rel="noopener noreferrer" title="在 GitHub 上提交问题">问题反馈</a>',
             '    </div>',
             '  </div>',
             '  <div id="mar-foot">',
