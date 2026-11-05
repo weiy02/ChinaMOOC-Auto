@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101318"/>
+      <stop offset="1" stop-color="#0b0d10"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.1" r="0.6">
+      <stop offset="0" stop-color="#ffb454" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#ffb454" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="56" height="56" patternUnits="userSpaceOnUse">
+      <path d="M56 0H0V56" fill="none" stroke="#ffffff" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <g font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif">
+    <rect x="80" y="92" width="56" height="56" rx="14" fill="#ffb454"/>
+    <text x="108" y="132" text-anchor="middle" font-size="28" font-weight="700" fill="#17191d">慕</text>
+
+    <text x="80" y="230" font-size="50" font-weight="700" fill="#e9edf3" letter-spacing="-1">中国大学 MOOC 自动化脚本</text>
+    <text x="80" y="290" font-size="27" fill="#a8b2c0">互评 · 讨论 · 随堂测验 · 整章自动学习</text>
+    <text x="80" y="338" font-size="24" fill="#74808f">Tampermonkey / 脚本猫通用 · 自动适配 MOOC 与 SPOC</text>
+
+    <g transform="translate(80, 400)">
+      <rect width="212" height="52" rx="10" fill="#ffb454"/>
+      <text x="106" y="34" text-anchor="middle" font-size="22" font-weight="600" fill="#17191d">一键安装</text>
+
+      <rect x="232" y="0" width="212" height="52" rx="10" fill="#14171d" stroke="#262c35"/>
+      <text x="338" y="34" text-anchor="middle" font-size="22" fill="#e9edf3">Greasy Fork</text>
+    </g>
+
+    <text x="80" y="540" font-size="20" fill="#5d6774">weiy02.github.io/ChinaMOOC-Auto · MIT License</text>
+  </g>
+
+  <!-- 右侧面板示意 -->
+  <g transform="translate(790, 150)">
+    <rect width="330" height="330" rx="14" fill="#14171d" stroke="#262c35"/>
+    <circle cx="24" cy="26" r="5" fill="#ffb454"/>
+    <text x="40" y="32" font-family="PingFang SC, sans-serif" font-size="15" fill="#e9edf3">MOOC 自动化</text>
+    <line x1="0" y1="52" x2="330" y2="52" stroke="#1e232b"/>
+
+    <g font-family="PingFang SC, sans-serif" font-size="14" fill="#74808f">
+      <text x="26" y="82" fill="#ffb454">学习</text>
+      <text x="92" y="82">互评</text>
+      <text x="158" y="82">讨论</text>
+      <text x="224" y="82">日志</text>
+      <text x="286" y="82">设置</text>
+    </g>
+    <line x1="18" y1="94" x2="50" y2="94" stroke="#ffb454" stroke-width="2"/>
+
+    <rect x="20" y="112" width="290" height="40" rx="8" fill="#ffb454" fill-opacity="0.12" stroke="#ffb454" stroke-opacity="0.35"/>
+    <text x="36" y="138" font-family="PingFang SC, sans-serif" font-size="14" fill="#ffb454">开始自动学习（当前章）</text>
+
+    <rect x="20" y="162" width="290" height="40" rx="8" fill="#ffb454" fill-opacity="0.12" stroke="#ffb454" stroke-opacity="0.35"/>
+    <text x="36" y="188" font-family="PingFang SC, sans-serif" font-size="14" fill="#ffb454">随堂测验：一键完成并提交</text>
+
+    <rect x="20" y="212" width="290" height="40" rx="8" fill="none" stroke="#262c35"/>
+    <text x="36" y="238" font-family="PingFang SC, sans-serif" font-size="14" fill="#a8b2c0">页面 DOM 诊断</text>
+
+    <line x1="0" y1="276" x2="330" y2="276" stroke="#1e232b"/>
+    <text x="22" y="306" font-family="PingFang SC, sans-serif" font-size="13" fill="#74808f">运行中：第 2 节 · 随堂测验</text>
+    <rect x="252" y="288" width="58" height="26" rx="7" fill="#191d24" stroke="#262c35"/>
+    <text x="281" y="306" text-anchor="middle" font-family="PingFang SC, sans-serif" font-size="12" fill="#a8b2c0">停止</text>
+  </g>
+</svg>
