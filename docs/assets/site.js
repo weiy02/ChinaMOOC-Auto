@@ -121,4 +121,61 @@
       spy.observe(sec);
     });
   }
+  /* ---------- 6. 安装量徽章：从 shields 取数，用自己的胶囊样式渲染 ---------- */
+  var statNodes = document.querySelectorAll('[data-stat]');
+  if (statNodes.length) {
+    var STAT_SRC = {
+      'gf-total': 'https://img.shields.io/greasyfork/dt/595205.svg',
+      'gf-daily': 'https://img.shields.io/greasyfork/dd/595205.svg',
+      'sc-total': 'https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.total_install&label=installs',
+      'gh-stars': 'https://img.shields.io/github/stars/weiy02/ChinaMOOC-Auto.svg'
+    };
+    var CACHE_KEY = 'mooc-stats-v1';
+    var TTL = 10 * 60 * 1000;
+
+    var paint = function (data) {
+      Array.prototype.forEach.call(statNodes, function (n) {
+        var v = data[n.dataset.stat];
+        if (v) n.textContent = v;
+      });
+    };
+
+    var cached = null;
+    try {
+      var raw = sessionStorage.getItem(CACHE_KEY);
+      if (raw) {
+        var box = JSON.parse(raw);
+        if (box && Date.now() - box.t < TTL && box.d) cached = box.d;
+      }
+    } catch (e) { /* 隐私模式忽略 */ }
+
+    if (cached) {
+      paint(cached);
+    } else {
+      var jobs = Object.keys(STAT_SRC).map(function (key) {
+        return fetch(STAT_SRC[key], { cache: 'no-cache' })
+          .then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
+          .then(function (svg) {
+            /* shields 的 SVG 里正文在最后一个 <text> 节点 */
+            var texts = svg.match(/>([^<>]+)<\/text>/g) || [];
+            for (var i = texts.length - 1; i >= 0; i--) {
+              var val = texts[i].replace(/^>|<\/text>$/g, '').trim();
+              if (val) return [key, val];
+            }
+            return null;
+          })
+          .catch(function () { return null; });
+      });
+
+      Promise.all(jobs).then(function (pairs) {
+        var data = {};
+        pairs.forEach(function (p) { if (p) data[p[0]] = p[1]; });
+        if (!Object.keys(data).length) return;
+        paint(data);
+        try {
+          sessionStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), d: data }));
+        } catch (e) { /* 存不下就算了 */ }
+      });
+    }
+  }
 })();
