@@ -5,74 +5,85 @@
       <stop offset="0.5" stop-color="#6366f1"/>
       <stop offset="1" stop-color="#22d3ee"/>
     </linearGradient>
-    <radialGradient id="glowA" cx="0.18" cy="0.0" r="0.7">
-      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.5"/>
-      <stop offset="1" stop-color="#7c5cff" stop-opacity="0"/>
+    <radialGradient id="b1" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#a78bfa" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#a78bfa" stop-opacity="0"/>
     </radialGradient>
-    <radialGradient id="glowB" cx="0.85" cy="0.1" r="0.6">
-      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.3"/>
+    <radialGradient id="b2" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.5"/>
       <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
     </radialGradient>
-    <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
-      <path d="M64 0H0V64" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="1"/>
-    </pattern>
+    <radialGradient id="b3" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#f9a8d4" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#f9a8d4" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="b4" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fcd34d" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#fcd34d" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="46"/>
+    </filter>
   </defs>
 
-  <rect width="1200" height="630" fill="#06060c"/>
-  <rect width="1200" height="630" fill="url(#grid)"/>
-  <rect width="1200" height="630" fill="url(#glowA)"/>
-  <rect width="1200" height="630" fill="url(#glowB)"/>
+  <rect width="1200" height="630" fill="#eef0f8"/>
+
+  <g filter="url(#blur)">
+    <ellipse cx="160" cy="40" rx="420" ry="330" fill="url(#b1)"/>
+    <ellipse cx="1060" cy="60" rx="400" ry="320" fill="url(#b2)"/>
+    <ellipse cx="940" cy="560" rx="380" ry="290" fill="url(#b3)"/>
+    <ellipse cx="80" cy="540" rx="340" ry="270" fill="url(#b4)"/>
+  </g>
 
   <g font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif">
-    <rect x="80" y="88" width="56" height="56" rx="16" fill="url(#brand)"/>
-    <text x="108" y="128" text-anchor="middle" font-size="28" font-weight="700" fill="#ffffff">慕</text>
+    <rect x="80" y="84" width="58" height="58" rx="17" fill="url(#brand)"/>
+    <text x="109" y="125" text-anchor="middle" font-size="29" font-weight="700" fill="#ffffff">慕</text>
 
-    <text x="80" y="234" font-size="52" font-weight="700" fill="#f2f4ff" letter-spacing="-2">中国大学 MOOC 自动化脚本</text>
-    <rect x="80" y="266" width="430" height="10" rx="5" fill="url(#brand)" opacity="0.9"/>
+    <text x="80" y="238" font-size="56" font-weight="700" fill="#151824" letter-spacing="-2">中国大学 MOOC 自动化脚本</text>
+    <rect x="80" y="262" width="400" height="10" rx="5" fill="url(#brand)" opacity="0.95"/>
 
-    <text x="80" y="336" font-size="28" fill="#a9b0cc">互评 · 讨论 · 随堂测验 · 整章自动学习</text>
-    <text x="80" y="382" font-size="24" fill="#6f7899">Tampermonkey / 脚本猫通用 · 自动适配 MOOC 与 SPOC</text>
+    <text x="80" y="336" font-size="27" fill="#545a70">互评 · 讨论 · 随堂测验 · 整章自动学习</text>
+    <text x="80" y="380" font-size="23" fill="#8b90a4">Tampermonkey / 脚本猫通用 · 自动适配 MOOC 与 SPOC</text>
 
-    <g transform="translate(80, 430)">
-      <rect width="220" height="54" rx="13" fill="url(#brand)"/>
-      <text x="110" y="35" text-anchor="middle" font-size="22" font-weight="600" fill="#ffffff">一键安装</text>
-      <rect x="240" y="0" width="212" height="54" rx="13" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.12"/>
-      <text x="346" y="35" text-anchor="middle" font-size="22" fill="#f2f4ff">Greasy Fork</text>
+    <g transform="translate(80, 428)">
+      <rect width="220" height="56" rx="15" fill="url(#brand)"/>
+      <text x="110" y="36" text-anchor="middle" font-size="22" font-weight="600" fill="#ffffff">一键安装</text>
+      <rect x="240" y="0" width="212" height="54" rx="15" fill="#ffffff" fill-opacity="0.72" stroke="#ffffff" stroke-opacity="0.9"/>
+      <text x="346" y="36" text-anchor="middle" font-size="22" fill="#151824">Greasy Fork</text>
     </g>
 
-    <text x="80" y="556" font-size="20" fill="#545d7a">weiy02.github.io/ChinaMOOC-Auto · MIT License</text>
+    <text x="80" y="556" font-size="19" fill="#a2a8bd">weiy02.github.io/ChinaMOOC-Auto · MIT License</text>
   </g>
 
   <!-- 右侧玻璃面板示意 -->
-  <g transform="translate(822, 138)">
-    <rect x="-1" y="-1" width="342" height="374" rx="21" fill="none" stroke="url(#brand)" stroke-opacity="0.7" stroke-width="2"/>
-    <rect width="340" height="372" rx="20" fill="#0a0a14" fill-opacity="0.92"/>
+  <g transform="translate(818, 122)">
+    <rect width="342" height="378" rx="24" fill="#ffffff" fill-opacity="0.62" stroke="#ffffff" stroke-opacity="0.95" stroke-width="1.5"/>
 
-    <circle cx="26" cy="28" r="5" fill="url(#brand)"/>
-    <text x="42" y="34" font-family="PingFang SC, sans-serif" font-size="15" fill="#eef0ff">MOOC 自动化</text>
-    <line x1="0" y1="54" x2="340" y2="54" stroke="#ffffff" stroke-opacity="0.07"/>
+    <circle cx="26" cy="30" r="5.5" fill="url(#brand)"/>
+    <text x="42" y="36" font-family="PingFang SC, sans-serif" font-size="15" font-weight="600" fill="#151824">MOOC 自动化</text>
+    <line x1="0" y1="56" x2="342" y2="56" stroke="#151824" stroke-opacity="0.06"/>
 
-    <g font-family="PingFang SC, sans-serif" font-size="14" fill="#6f7899">
-      <text x="28" y="84" fill="#ffffff">学习</text>
-      <text x="94" y="84">互评</text>
-      <text x="160" y="84">讨论</text>
-      <text x="226" y="84">日志</text>
-      <text x="288" y="84">设置</text>
+    <g font-family="PingFang SC, sans-serif" font-size="14">
+      <text x="30" y="88" fill="#151824" font-weight="600">学习</text>
+      <text x="96" y="88" fill="#8b90a4">互评</text>
+      <text x="162" y="88" fill="#8b90a4">讨论</text>
+      <text x="228" y="88" fill="#8b90a4">日志</text>
+      <text x="290" y="88" fill="#8b90a4">设置</text>
     </g>
-    <rect x="20" y="94" width="34" height="3" rx="1.5" fill="url(#brand)"/>
+    <rect x="22" y="98" width="34" height="3" rx="1.5" fill="url(#brand)"/>
 
-    <rect x="20" y="114" width="300" height="42" rx="10" fill="#8b5cf6" fill-opacity="0.24" stroke="#a78bfa" stroke-opacity="0.4"/>
-    <text x="36" y="141" font-family="PingFang SC, sans-serif" font-size="14" fill="#e6e2ff">开始自动学习（当前章）</text>
+    <rect x="20" y="120" width="302" height="42" rx="12" fill="#ffffff" fill-opacity="0.85" stroke="#ffffff"/>
+    <text x="38" y="147" font-family="PingFang SC, sans-serif" font-size="14" font-weight="500" fill="#151824">开始自动学习（当前章）</text>
 
-    <rect x="20" y="166" width="300" height="42" rx="10" fill="#8b5cf6" fill-opacity="0.24" stroke="#a78bfa" stroke-opacity="0.4"/>
-    <text x="36" y="193" font-family="PingFang SC, sans-serif" font-size="14" fill="#e6e2ff">随堂测验：一键完成并提交</text>
+    <rect x="20" y="172" width="302" height="42" rx="12" fill="#ffffff" fill-opacity="0.85" stroke="#ffffff"/>
+    <text x="38" y="199" font-family="PingFang SC, sans-serif" font-size="14" font-weight="500" fill="#151824">随堂测验：一键完成并提交</text>
 
-    <rect x="20" y="218" width="300" height="42" rx="10" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.08"/>
-    <text x="36" y="245" font-family="PingFang SC, sans-serif" font-size="14" fill="#a9b0cc">页面 DOM 诊断</text>
+    <rect x="20" y="224" width="302" height="42" rx="12" fill="#ffffff" fill-opacity="0.45" stroke="#151824" stroke-opacity="0.08"/>
+    <text x="38" y="251" font-family="PingFang SC, sans-serif" font-size="14" fill="#545a70">页面 DOM 诊断</text>
 
-    <line x1="0" y1="286" x2="340" y2="286" stroke="#ffffff" stroke-opacity="0.07"/>
-    <text x="24" y="320" font-family="PingFang SC, sans-serif" font-size="13" fill="#6f7899">运行中：第 2 节 · 随堂测验</text>
-    <rect x="256" y="300" width="60" height="27" rx="8" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.1"/>
-    <text x="286" y="319" text-anchor="middle" font-family="PingFang SC, sans-serif" font-size="12" fill="#a9b0cc">停止</text>
+    <line x1="0" y1="296" x2="342" y2="296" stroke="#151824" stroke-opacity="0.06"/>
+    <text x="24" y="330" font-family="PingFang SC, sans-serif" font-size="13" fill="#8b90a4">运行中：第 2 节 · 随堂测验</text>
+    <rect x="258" y="310" width="62" height="28" rx="9" fill="#ffffff" fill-opacity="0.7" stroke="#151824" stroke-opacity="0.1"/>
+    <text x="289" y="329" text-anchor="middle" font-family="PingFang SC, sans-serif" font-size="12" fill="#545a70">停止</text>
   </g>
 </svg>
