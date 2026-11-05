@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.14.2
-// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目自动作答，答对自动继续、答错需手动点击播放）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
+// @version      1.14.3
+// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目默认直接拦截：不放行暂停、浮层一出现就收掉，视频一路播到底，拦不住时才自动作答并提交、答案优先取课件接口）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=icourse163.org
@@ -69,6 +69,20 @@
         // 页面刚切过去时 DOM 往往还是上一份内容，立即判定会误判类型，
         // 甚至把“还没开始的内容”当成已完成而马上跳到下一节。
         LEARN_JUMP_SETTLE_MS: 10000,
+
+        // ---- 视频播放中的弹题 ----
+        // 首选方案：不让弹题打断播放。两层拦截——
+        //   1. 劫持 HTMLMediaElement.prototype.pause，弹题那一下暂停不真的执行；
+        //   2. MutationObserver 盯着新增节点，浮层一插进来就立刻隐藏掉。
+        // 视频因此能一播到底，不会卡在“答题才能继续”。
+        // 注意：这是前端拦截，平台若按“弹题通过数”结算进度，可能不计这一段。
+        // 出现这种情况把这个开关关掉，就会退回下面的自动作答。
+        LEARN_VIDEO_SKIP_POPUP: true,
+        // 兜底方案：拦截没成功（浮层反复出现、或它包着播放器没法隐藏）时，
+        // 自动选答案并提交。答案优先从课件接口里取，取不到才按顺位猜。
+        LEARN_VIDEO_ANSWER_POPUP: true,
+        // 拦截成功后的观察窗口：这段时间内视频仍停着，就认定拦截失败，转兜底作答
+        LEARN_VIDEO_GUARD_GRACE: 4000,
     };
 
     var LIST_CONFIG = {
@@ -307,6 +321,35 @@
         updateStatus(next
             ? '🔓 已解除复制限制：可选中、可右键、Ctrl/⌘+C 可用'
             : '🔒 已恢复页面原本的复制限制');
+    }
+
+    // ===================== 视频弹题拦截开关 =====================
+    // 默认跟 CONFIG.LEARN_VIDEO_SKIP_POPUP 走；用户手动切过一次，就以本地存的值为准。
+    // 之所以要留这个开关：拦截是纯前端动作，如果平台按「弹题通过数」结算学习进度，
+    // 关掉它退回「自动作答并提交」才是安全路径。
+    var POPUP_SKIP = { KEY: 'mar.popupSkip' };
+
+    function isPopupSkipOn() {
+        var v = readStore(POPUP_SKIP.KEY, null);
+        if (v === null || v === undefined) return !!CONFIG.LEARN_VIDEO_SKIP_POPUP;
+        return !!v;
+    }
+
+    function updatePopupSkipButton() {
+        var btn = document.getElementById('mar-popup-skip');
+        if (!btn) return;
+        var on = isPopupSkipOn();
+        btn.textContent = '视频弹题拦截：' + (on ? '开' : '关');
+        if (on) btn.classList.add('mar-on'); else btn.classList.remove('mar-on');
+    }
+
+    function togglePopupSkip() {
+        var next = !isPopupSkipOn();
+        writeStore(POPUP_SKIP.KEY, next);
+        updatePopupSkipButton();
+        updateStatus(next
+            ? '⏭ 已开启弹题拦截：视频不再被弹题打断，浮层一出现就收掉'
+            : '📝 已关闭弹题拦截：弹题正常出现，脚本自动选答案并提交');
     }
 
     // ===================== 页面类型判定 =====================
@@ -2202,7 +2245,7 @@
         '<li><b>随堂测验</b>：自动作答并提交，提交后停留 10 秒再进下一个内容。</li>',
         '<li><b>每次跳转后先硬等 10 秒</b>再处理新内容——刚切过去时页面还是上一份内容，立刻判定会认错类型甚至秒跳下一节。等待期间点【下一节】可提前跳过。</li>',
         '<li><b>单元测验 / 作业 / 考试</b>：不进入。</li>',
-        '<li><b>视频中弹题</b>：自动作答；答错视频会停住，需要手动点一下播放。</li>',
+        '<li><b>视频中弹题</b>：默认<b>直接拦截</b>——不让视频暂停、浮层一冒出来就收掉，视频一路播到底；实在拦不住（浮层包着播放器）时才自动作答并提交，答案优先取课件接口里的正确答案，取不到才退化为顺位作答。<b>设置</b>页签可关掉拦截退回纯自动作答。</li>',
         '<li>右下角<b>【下一节】</b>随时可点，立即跳到下一个内容。</li>',
         '</ul>',
         '<h4>日志与诊断</h4>',
@@ -2212,7 +2255,7 @@
         '</ul>',
         '<h4>设置</h4>',
         '<ul>',
-        '<li>讨论内容来源、视频倍速（0.5x ~ 3x）、解除页面复制限制、清除讨论回复记录。</li>',
+        '<li>讨论内容来源、视频倍速（0.5x ~ 3x）、<b>视频弹题拦截</b>（关掉则退回自动作答）、解除页面复制限制、清除讨论回复记录。</li>',
         '<li><b>问题反馈</b>：点一下直接打开 GitHub 的新建 Issue 页面。反馈时请附上「日志」里相关的几行，以及「页面 DOM 诊断」导出的结构，定位会快很多。</li>',
         '</ul>',
         '<h4>课程类型</h4>',
@@ -2315,6 +2358,7 @@
             '        <span class="mar-label">视频倍速：<span id="mar-rate-now">1.0x</span></span>',
             '        <input id="mar-video-rate" type="range" min="0.5" max="3" step="0.25" value="1">',
             '      </div>',
+            '      <button id="mar-popup-skip" class="mar-btn mar-toggle">视频弹题拦截：开</button>',
             '      <button id="mar-copy-unlock" class="mar-btn mar-toggle">解除复制限制：关</button>',
             '      <button id="mar-discuss-clear" class="mar-btn">清除回复记录</button>',
             '      <a id="mar-feedback" class="mar-btn" href="https://github.com/weiy02/ChinaMOOC-Auto/issues/new" target="_blank" rel="noopener noreferrer" title="在 GitHub 上提交问题">问题反馈</a>',
@@ -2398,10 +2442,12 @@
         document.getElementById('mar-batch').addEventListener('click', function () { guard(function () { return batchReview(CONFIG.BATCH_COUNT); }); });
         document.getElementById('mar-auto').addEventListener('click', function () { guard(autoReviewAll); });
         document.getElementById('mar-fix').addEventListener('click', function () { guard(scoreFix); });
-        // 复制开关不进 setButtonsRunning 的列表：它和任务状态无关，
+        // 复制/弹题拦截这两个开关不进 setButtonsRunning 的列表：它们和任务状态无关，
         // 任务跑着的时候也应该能随时开关。
         document.getElementById('mar-copy-unlock').addEventListener('click', toggleCopyUnlock);
         updateCopyUnlockButton();
+        document.getElementById('mar-popup-skip').addEventListener('click', togglePopupSkip);
+        updatePopupSkipButton();
 
         document.getElementById('mar-discuss-preview').addEventListener('click', function () { guard(previewReply); });
         document.getElementById('mar-discuss-reply').addEventListener('click', function () { guard(replyDiscussion); });
@@ -2451,6 +2497,8 @@
         document.getElementById('mar-stop').addEventListener('click', function () {
             if (!taskState.running) return;
             taskState.cancelled = true;
+            // 停止时立刻撤掉弹题拦截，把播放器的暂停控制权还给页面
+            stopPopupGuard();
             // 新版路径路由跳转会整页刷新，光靠内存里的 cancelled 不够，
             // 必须同时清掉 localStorage 里的续跑状态，刷新后才会真正停下来
             learnClearState();
@@ -3738,6 +3786,210 @@
         try { if (video && Math.abs(video.playbackRate - r) > 0.01) video.playbackRate = r; } catch (e) {}
     }
 
+    // ===================== 视频弹题拦截 =====================
+    // 弹题本质是两件事：把视频暂停 + 盖一层浮层。两件事分别掐掉，视频就能一路播下去。
+    //
+    // 为什么必须掐 pause：浮层删了平台还会再插一次，而暂停只发生在“打点”那一下。
+    // 那一次没真的停下来，后面就不会再有暂停——除非有人拖进度条。
+    //
+    // 为什么还要收浮层：pause 被吞掉、视频继续播，但浮层会一直盖在画面上。
+    // 自动学习时人不在，挡着无所谓；可它上面往往还有个透明遮罩劫持鼠标事件，
+    // 后面脚本要点的按钮就点不动了，所以还是收掉干净。
+    var POPUP_GUARD = {
+        installed: false,
+        active: false,
+        prevPause: null,
+        observer: null,
+        blocked: 0,          // 掐掉的暂停次数
+        hidden: 0,           // 收掉的浮层次数
+        resumed: 0,          // 主动恢复播放次数
+        popupSeenAt: 0,      // 最近一次看到弹题浮层的时间
+        lastSweepAt: 0,
+    };
+
+    var POPUP_SWEEP_SELECTOR = [
+        '[class*="dialog"]', '[class*="modal"]', '[class*="popup"]', '[class*="Popup"]',
+        '[class*="layer"]', '[class*="overlay"]', '[class*="mask"]', '[class*="Mask"]',
+        '[class*="question"]', '[class*="quiz"]', '[class*="Quiz"]',
+    ].join(',');
+
+    // 单个节点是不是「盖在视频上的题」。判据比 findQuizPopup 宽松一点：
+    // 我们是在做全页扫描，宁可多认几个也要抓住刚插进来还没渲染完的浮层。
+    function isQuizOverlay(el) {
+        if (!el || el.nodeType !== 1) return false;
+        if (el.__marHidden) return false;
+        if (!isVisible(el)) return false;
+        if (el.clientWidth < 200 || el.clientHeight < 100) return false;
+        if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-log-overlay, #mar-next-btn')) return false;
+        // 目录/侧栏也常带 dialog 类名，排除掉，别把导航面板收没了
+        if (el.closest && el.closest('[class*="catalog"], [class*="sidebar"], [class*="menu"], [class*="nav"]')) return false;
+
+        // 包着播放器的节点绝不能动：收掉它等于把播放器一起收掉
+        var v = findVideo();
+        if (v && el.contains(v)) return false;
+
+        // 用 innerText 而不是 textContent 来判选项形态：innerText 保留视觉换行，
+        // 而 cleanText 会把换行压成空格，「A. xxx」就不再是行首，判不出来。
+        var raw = '';
+        try { raw = el.innerText || el.textContent || ''; } catch (e) { raw = el.textContent || ''; }
+        var txt = cleanText(raw);
+        if (!txt || txt.length > 2000) return false;
+
+        // 两类特征认一个就行：有题干用语，或者有「A. / 1、/ ①」这种选项形态。
+        // 只认前一种会漏掉文案很短的弹题（比如「随堂小练」）。
+        var hasPrompt = /请选择|请回答|请作答|单选题|多选题|判断题|填空题|本题|正确选项|以下哪|下列哪|选一选|作答/.test(txt);
+        var hasOptionShape = /(?:^|[\n\r])\s*[A-Ha-h1-9]\s*[\.、．）)]\s*\S/.test(raw)
+            // 版式全在一行时（「A. int B. while」）靠两个连续选项认，这时得用压平后的文本
+            || /[A-Ha-h]\s*[\.、．）)]\s*[^\s].{0,40}?[A-Ha-h]\s*[\.、．）)]\s*[^\s]/.test(txt);
+        if (!hasPrompt && !hasOptionShape) return false;
+
+        // 得真有能选/能点的东西，否则就是块说明文字。
+        // 注意 hasOptionShape 也当作“有选项”的证据：有的弹层整块是 div，
+        // 既没有 input 也没有 button，只能靠文字形态认。
+        var pickable = el.querySelector('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [class*="option"], [class*="choice"], [class*="selectItem"]');
+        var clickable = el.querySelector('button, [role="button"], input[type="button"], input[type="submit"]');
+        if (!pickable && !clickable && !hasOptionShape) return false;
+        return true;
+    }
+
+    // 收掉浮层：display:none 而不是 remove。remove 会让平台的状态机找不到自己
+    // 插进去的节点，有些实现会因此反复重插、甚至把播放器一起重建（画面闪黑）。
+    function hideQuizOverlay(el) {
+        if (!isQuizOverlay(el)) return false;
+        try {
+            el.style.setProperty('display', 'none', 'important');
+            el.__marHidden = true;
+        } catch (e) { return false; }
+
+        // 顺手收掉同级的遮罩兄弟：弹层走了遮罩还在，整页都会点不动
+        var parent = el.parentElement;
+        if (parent) {
+            for (var i = 0; i < parent.children.length; i++) {
+                var sib = parent.children[i];
+                if (sib === el || sib.__marHidden || !isVisible(sib)) continue;
+                if (!/mask|overlay|backdrop|shadow|modal/i.test(String(sib.className || ''))) continue;
+                try {
+                    sib.style.setProperty('display', 'none', 'important');
+                    sib.__marHidden = true;
+                } catch (e2) { /* 单个兄弟失败不影响主流程 */ }
+            }
+        }
+        POPUP_GUARD.hidden++;
+        POPUP_GUARD.popupSeenAt = Date.now();
+        return true;
+    }
+
+    function sweepQuizOverlays() {
+        if (!POPUP_GUARD.active) return 0;
+        var now = Date.now();
+        if (now - POPUP_GUARD.lastSweepAt < 120) return 0;  // 插入高峰时限流，别把主线程占满
+        POPUP_GUARD.lastSweepAt = now;
+
+        var els, n = 0;
+        try { els = document.querySelectorAll(POPUP_SWEEP_SELECTOR); } catch (e) { return 0; }
+        for (var i = 0; i < els.length && n < 6; i++) {
+            if (hideQuizOverlay(els[i])) n++;
+        }
+        return n;
+    }
+
+    var popupSweepTimer = null;
+    function scheduleSweep() {
+        if (popupSweepTimer) return;
+        popupSweepTimer = setTimeout(function () {
+            popupSweepTimer = null;
+            sweepQuizOverlays();
+        }, 100);
+    }
+
+    // 视频被停住了就拉起来。「自动播放策略」只拦“没有用户手势的 play()”，
+    // 而我们是在一个已经有播放历史的 video 上调用，通常能过；过不了也没关系，
+    // 循环里还有一层兜底（和手工点一下播放是同一条路径）。
+    function resumeAfterGuard() {
+        var v = findVideo();
+        if (!v || !v.paused) return false;
+        try {
+            var p = v.play();
+            if (p && p.catch) p.catch(function () {});
+            POPUP_GUARD.resumed++;
+            return true;
+        } catch (e) { return false; }
+    }
+
+    function installPopupGuard() {
+        if (POPUP_GUARD.installed) return;
+        if (typeof HTMLMediaElement === 'undefined' || !HTMLMediaElement.prototype.pause) return;
+
+        POPUP_GUARD.prevPause = HTMLMediaElement.prototype.pause;
+        POPUP_GUARD.installed = true;
+
+        // 不暂停，但要给「不是弹题的暂停」留一条回去的路：
+        // 有些暂停是平台正常逻辑（切清晰度、切集）或用户手点的。
+        // 所以这里先压住 1.2 秒——这期间冒出弹题浮层，就判定是弹题、保持播放；
+        // 没冒出来，说明是别的暂停，补一次真正的 pause，行为跟没拦截时一致。
+        HTMLMediaElement.prototype.pause = function () {
+            if (!POPUP_GUARD.active) {
+                return POPUP_GUARD.prevPause.apply(this, arguments);
+            }
+            if (this.paused) return;   // 已经是暂停态，原生也不会做任何事
+
+            var media = this;
+            var prevPause = POPUP_GUARD.prevPause;
+            POPUP_GUARD.blocked++;
+
+            setTimeout(function () {
+                try {
+                    if (!POPUP_GUARD.active) { prevPause.call(media); return; }
+                    // 1.2 秒内见过浮层 → 认定这次暂停是弹题干的，作废
+                    if (Date.now() - POPUP_GUARD.popupSeenAt < 2500) return;
+                    if (media.paused) return;
+                    prevPause.call(media);
+                } catch (e) { /* 播放器可能已经被 SPA 换掉了，忽略 */ }
+            }, 1200);
+            return undefined;
+        };
+    }
+
+    function startPopupGuard() {
+        if (!isPopupSkipOn()) {
+            logDebug('quiz', '弹题拦截已关闭，走自动作答并提交');
+            return;
+        }
+        installPopupGuard();
+        POPUP_GUARD.active = true;
+        POPUP_GUARD.popupSeenAt = 0;
+        if (!POPUP_GUARD.observer && window.MutationObserver) {
+            POPUP_GUARD.observer = new MutationObserver(function (records) {
+                if (!POPUP_GUARD.active) return;
+                for (var i = 0; i < records.length; i++) {
+                    var added = records[i].addedNodes;
+                    for (var j = 0; j < added.length; j++) {
+                        var node = added[j];
+                        if (!node || node.nodeType !== 1) continue;
+                        // 只对「看起来像浮层」的新节点做扫描，避免整页变动都触发
+                        if (!/dialog|modal|popup|layer|overlay|mask|question|quiz/i.test(String(node.className || ''))) continue;
+                        scheduleSweep();
+                        return;
+                    }
+                }
+            });
+            try { POPUP_GUARD.observer.observe(document.body, { childList: true, subtree: true }); }
+            catch (e) { POPUP_GUARD.observer = null; }
+        }
+        logDebug('quiz', '弹题拦截已开启：暂停会被压住，浮层出现即收掉');
+        // 进视频时可能已经有残留浮层，先扫一遍
+        scheduleSweep();
+    }
+
+    function stopPopupGuard() {
+        POPUP_GUARD.active = false;
+        if (POPUP_GUARD.observer) {
+            try { POPUP_GUARD.observer.disconnect(); } catch (e) {}
+            POPUP_GUARD.observer = null;
+        }
+        if (popupSweepTimer) { clearTimeout(popupSweepTimer); popupSweepTimer = null; }
+    }
+
     // 视频中弹出的题目浮层。只在有视频时探测；强特征（题干文字）出现时
     // 即使视频还在播也认，避免漏掉“先弹题后暂停”的情况。
     function findQuizPopup() {
@@ -3774,12 +4026,205 @@
         return null;
     }
 
-    // 作答弹题：选第一个选项 → 点提交/继续。对错不保证。
+    // —— 视频弹题取答案 ——
+    // 视频弹题的题目跟着课件接口一起下发，但字段名各版本不一样
+    // （videoQuiz / popupQuiz / questionPointList / interactiveQuestion …）。
+    // 所以不去猜字段名，而是递归扫整个 JSON：凡是长得像「一道带选项和正确答案的题」
+    // 就收下来。字段名会改，结构不太会改。
+    var VIDEO_QUIZ_CACHE = { key: '', at: 0, questions: null };
+    var VIDEO_DIG_BUDGET = 20000;
+
+    function looksLikeQuestion(o) {
+        if (!o || typeof o !== 'object' || Array.isArray(o)) return false;
+        var opts = o.options || o.optionList || o.optionVoList || o.choices;
+        if (!opts || typeof opts.length !== 'number' || !opts.length) return false;
+        var first = opts[0];
+        if (!first || typeof first !== 'object') return false;
+        if (!(first.label || first.content || first.text || first.optionContent)) return false;
+        if (o.correctOptionIds || o.correctOptionId || o.answerIds || o.correctAnswer) return true;
+        for (var i = 0; i < opts.length; i++) {
+            var p = opts[i];
+            if (p && (p.answer === true || p.isAnswer === true || p.correct === true)) return true;
+        }
+        return false;
+    }
+
+    function digQuizQuestions(node, out, depth) {
+        // 课件接口的 JSON 很大（课件、评论、题目全混在一起），递归必须设预算，
+        // 否则一个深分支就能把主线程卡住好几秒
+        if (!node || depth > 6 || out.length >= 40 || VIDEO_DIG_BUDGET <= 0) return;
+        VIDEO_DIG_BUDGET--;
+        if (Array.isArray(node)) {
+            for (var i = 0; i < node.length && i < 60; i++) digQuizQuestions(node[i], out, depth + 1);
+            return;
+        }
+        if (typeof node !== 'object') return;
+        if (looksLikeQuestion(node)) {
+            // 归一化成 lqParseApiQuestion 认识的形状，各版本的字段名在这里对齐一次
+            var q = lqParseApiQuestion({
+                type: node.type,
+                title: node.title || node.plainTextTitle || node.questionTitle || node.content || '',
+                options: node.options || node.optionList || node.optionVoList || node.choices || [],
+                correctOptionIds: node.correctOptionIds || node.correctOptionId || node.answerIds || [],
+                correctAnswer: node.correctAnswer,
+            });
+            if (q && q.title) out.push(q);
+        }
+        for (var k in node) {
+            if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+            var v = node[k];
+            if (v && typeof v === 'object') digQuizQuestions(v, out, depth + 1);
+        }
+    }
+
+    async function fetchUnitPageJson(ctx) {
+        if (!ctx || !ctx.courseKey || !ctx.lessonId) return null;
+        var qs = [
+            'courseKey=' + encodeURIComponent(ctx.courseKey),
+            'lessonId=' + encodeURIComponent(ctx.lessonId),
+            'entryMode=' + encodeURIComponent(ctx.entryMode || 'learn'),
+        ];
+        if (ctx.termId) qs.push('termId=' + encodeURIComponent(ctx.termId));
+        if (ctx.unitId) qs.push('unitId=' + encodeURIComponent(ctx.unitId));
+        var url = LESSON_QUIZ.API + '?' + qs.join('&');
+        try {
+            var res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+            if (!res.ok) { logDebug('quiz', '视频弹题取答案：接口 HTTP ' + res.status); return null; }
+            return await res.json();
+        } catch (e) {
+            logDebug('quiz', '视频弹题取答案失败：' + (e && e.message ? e.message : e));
+            return null;
+        }
+    }
+
+    // 缓存 60 秒：一个视频里可能弹好几道，每次都打一次接口既慢又没必要
+    async function videoQuizAnswers() {
+        var ctx = lqContext();
+        var key = [ctx.courseKey, ctx.lessonId, ctx.unitId, ctx.termId].join('|');
+        if (VIDEO_QUIZ_CACHE.key === key && Date.now() - VIDEO_QUIZ_CACHE.at < 60000) {
+            return VIDEO_QUIZ_CACHE.questions || [];
+        }
+        var json = await fetchUnitPageJson(ctx);
+        var raw = [];
+        VIDEO_DIG_BUDGET = 20000;
+        if (json) digQuizQuestions(json, raw, 0);
+        if (VIDEO_DIG_BUDGET <= 0) {
+            logDebug('quiz', '视频弹题：接口 JSON 过大，扫描提前结束（已找到 ' + raw.length + ' 道）');
+        }
+
+        var seen = {}, uniq = [];
+        for (var i = 0; i < raw.length; i++) {
+            var k = lqKey(raw[i].title);
+            if (!k || seen[k]) continue;
+            seen[k] = true;
+            uniq.push(raw[i]);
+        }
+        VIDEO_QUIZ_CACHE = { key: key, at: Date.now(), questions: uniq };
+        logDebug('quiz', '视频弹题：课件接口里挖到 ' + uniq.length + ' 道带答案的题');
+        return uniq;
+    }
+
+    // 弹层里的选项。版式不确定，三层兜底：label+input → 裸 input → 像选项的文字块
+    function popupOptions(popup) {
+        var out = lqOptions(popup);
+        if (out.length) return out;
+
+        var i, el;
+        var inputs = popup.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+        for (i = 0; i < inputs.length; i++) {
+            if (!isVisible(inputs[i]) || inputs[i].disabled) continue;
+            el = (inputs[i].closest && inputs[i].closest('label')) || inputs[i].parentElement;
+            out.push({ el: el, input: inputs[i], text: lqOptionText(el) });
+        }
+        if (out.length) return out;
+
+        var cands = popup.querySelectorAll('[class*="option"], [class*="choice"], [class*="selectItem"], li, [role="radio"], [role="checkbox"]');
+        for (i = 0; i < cands.length; i++) {
+            el = cands[i];
+            if (!isVisible(el)) continue;
+            var t = cleanText(el.textContent || '');
+            if (!t || t.length > 120) continue;
+            // 只认「A. xxx」「1、xxx」「① xxx」这种选项形态，免得把题干当选项点了
+            if (!/^[A-Ha-h1-9]\s*[\.、．）)]|^[①②③④⑤⑥⑦⑧]/.test(t)) continue;
+            out.push({ el: el, input: null, text: t });
+        }
+        return out;
+    }
+
+    // 该勾哪几个选项（返回下标）。先按平台 ID 整段比对，认不出再用文案匹配——
+    // 和随堂测验那边同一套判据，理由也同一个：ID 会被加前缀、会互为后缀。
+    function popupCorrectIndexes(options, q) {
+        var picked = [], i, j;
+        if (q.ids && q.ids.length) {
+            for (i = 0; i < options.length; i++) {
+                var tokens = lqIdTokens(options[i].input);
+                if (!tokens.length && options[i].el && options[i].el.id) tokens = [String(options[i].el.id)];
+                for (j = 0; j < q.ids.length; j++) {
+                    if (tokens.indexOf(q.ids[j]) !== -1) { picked.push(i); break; }
+                }
+            }
+        }
+        if (picked.length === 0 && q.labels && q.labels.length) {
+            for (var k = 0; k < q.labels.length; k++) {
+                var target = lqKey(q.labels[k]);
+                if (!target) continue;
+                var best = -1, bestScore = 0;
+                for (i = 0; i < options.length; i++) {
+                    if (picked.indexOf(i) !== -1) continue;
+                    var t = lqKey(options[i].text);
+                    if (!t) continue;
+                    var score = 0;
+                    if (t === target) score = 1000 + t.length;
+                    else if (t.indexOf(target) !== -1) score = 500 + target.length;
+                    else if (target.indexOf(t) !== -1 && t.length >= 2) score = 300 + t.length;
+                    if (score > bestScore) { bestScore = score; best = i; }
+                }
+                if (best !== -1) picked.push(best);
+            }
+        }
+        return picked;
+    }
+
+    // 作答弹题。顺序：接口答案 → 匹配不上才顺位猜（只为让平台放行）。
+    // 返回 true 表示已点过提交。
     async function answerQuizPopup(popup) {
-        var i, clickedOpt = false;
-        var radios = popup.querySelectorAll('input[type="radio"], input[type="checkbox"]');
-        for (i = 0; i < radios.length; i++) {
-            if (isVisible(radios[i]) && !radios[i].disabled) { realClick(radios[i]); clickedOpt = true; break; }
+        var i;
+        var options = popupOptions(popup);
+        var popupText = cleanText(popup.textContent || '').slice(0, 600);
+        var picked = [];
+        var usedRealAnswer = false;
+
+        if (CONFIG.LEARN_VIDEO_ANSWER_POPUP && options.length) {
+            var qs = await videoQuizAnswers();
+            if (qs && qs.length) {
+                var q = lqMatchQuestion(qs, popupText, []);
+                if (q) {
+                    picked = popupCorrectIndexes(options, q);
+                    usedRealAnswer = picked.length > 0;
+                    logDebug('quiz', '弹题匹配到接口题目「' + String(q.title || '').slice(0, 30)
+                        + '」，应选 ' + picked.length + ' 个选项');
+                } else {
+                    logDebug('quiz', '弹题没在接口的 ' + qs.length + ' 道题里匹配上，改用顺位作答');
+                }
+            }
+        }
+
+        var clickedOpt = false;
+        if (usedRealAnswer) {
+            for (i = 0; i < picked.length; i++) {
+                var opt = options[picked[i]];
+                if (!opt) continue;
+                realClick(opt.input || opt.el);
+                clickedOpt = true;
+            }
+            updateStatus('📝 视频弹题：按接口答案作答（' + picked.length + ' 项）');
+        }
+
+        if (!clickedOpt) {
+            var radios = popup.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+            for (i = 0; i < radios.length; i++) {
+                if (isVisible(radios[i]) && !radios[i].disabled) { realClick(radios[i]); clickedOpt = true; break; }
+            }
         }
         if (!clickedOpt) {
             var opts = popup.querySelectorAll('label, li, [class*="option"], [class*="choice"], [class*="answer"], [class*="selectItem"]');
@@ -3817,6 +4262,7 @@
     }
 
     // 视频内容：从头播放 → 处理弹题 → 看完返回 true
+    // 弹题优先拦截（不收暂停、收浮层），拦不住才退一步自动作答提交。
     async function learnVideoItem() {
         var video = await waitForVideo();
         if (!video) { logDebug('video', '⚠️ 未检测到播放器，按其它内容处理'); updateStatus('⚠️ 未检测到播放器，按其它内容处理'); return true; }
@@ -3827,76 +4273,137 @@
                 try { video.__marEndedFlag = true; } catch (e) {}
             });
         }
-        try { if (video.currentTime > 0) video.currentTime = 0; } catch (e) {}
-        logDebug('video', '从头播放：时长=' + (video.duration ? video.duration.toFixed(1) : '?') + 's，倍速=' + loadVideoRate() + 'x');
-        updateStatus('▶ 从头播放视频，看完自动进入下一个内容...');
-        await playVideo(video);
 
-        var manualResume = false;
-        var lastAnswerAt = 0;
-        var lastRetry = 0;
-        while (!taskState.cancelled) {
-            video = findVideo() || video;
-            applyVideoRate(video); // 持续应用倍速（切清晰度/拖动进度后平台可能重置）
+        // 拦截要赶在播放之前装好：平台可能在开播瞬间就把打点排上了
+        startPopupGuard();
+        try {
+            try { if (video.currentTime > 0) video.currentTime = 0; } catch (e) {}
+            logDebug('video', '从头播放：时长=' + (video.duration ? video.duration.toFixed(1) : '?') + 's，倍速=' + loadVideoRate() + 'x');
+            updateStatus('▶ 从头播放视频，看完自动进入下一个内容...');
+            await playVideo(video);
 
-            // 0) 用户点了【下一节】→ 跳过当前视频
-            if (manualWaitFlag) { logDebug('video', '用户点击【下一节】，跳过当前视频'); updateStatus('⏭ 用户点击【下一节】，跳过当前视频'); return true; }
+            var manualResume = false;
+            var lastAnswerAt = 0;
+            var lastRetry = 0;
+            var guardFailAt = 0;
+            var answerTries = 0;
 
-            // 1) 视频中弹出题目 → 作答
-            var popup = findQuizPopup();
-            if (popup && Date.now() - lastAnswerAt > 2500) {
-                lastAnswerAt = Date.now();
-                updateStatus('📝 视频中弹出题目，自动作答（不保证对错，只为让视频继续）...');
-                logDebug('quiz', '视频中弹出题目，自动作答...');
-                await answerQuizPopup(popup);
-                var t0 = Date.now(), resumed = false;
-                while (Date.now() - t0 < CONFIG.LEARN_QUIZ_RESUME_WAIT) {
-                    await sleep(CONFIG.LEARN_IDLE_POLL);
-                    var vv = findVideo();
-                    if (vv && !vv.paused && vv.currentTime > 0) { resumed = true; break; }
-                }
-                if (resumed) {
-                    logDebug('quiz', '✅ 答对，平台放行，视频自动继续');
-                    updateStatus('✅ 题目已答，平台放行，视频自动继续播放');
-                } else {
-                    logDebug('quiz', '⚠️ 可能答错，视频停止 —— 请手动点播放，脚本持续监控');
-                    updateStatus('⚠️ 答案可能不对，视频已停止 —— 请手动点击播放按钮继续，脚本会继续监控');
-                    manualResume = true;
-                    var v = findVideo();
-                    if (v) {
-                        await new Promise(function (resolve) {
-                            var doneFlag = false;
-                            function fin() { if (doneFlag) return; doneFlag = true; clearInterval(poller); resolve(); }
-                            function check() {
-                                if (taskState.cancelled || manualWaitFlag) { fin(); return; }
-                                var c = findVideo();
-                                if (c && !c.paused) fin();
-                            }
-                            var poller = setInterval(check, 600);
-                            setTimeout(fin, 10 * 60 * 1000);
-                            if (v.addEventListener) v.addEventListener('play', fin, { once: true });
-                        });
+            while (!taskState.cancelled) {
+                video = findVideo() || video;
+                applyVideoRate(video); // 持续应用倍速（切清晰度/拖动进度后平台可能重置）
+
+                // 0) 用户点了【下一节】→ 跳过当前视频
+                if (manualWaitFlag) { logDebug('video', '用户点击【下一节】，跳过当前视频'); updateStatus('⏭ 用户点击【下一节】，跳过当前视频'); return true; }
+
+                // 1) 弹题拦截：主动扫一遍，比等 MutationObserver 更及时
+                if (POPUP_GUARD.active) {
+                    var swept = sweepQuizOverlays();
+                    if (swept > 0) {
+                        resumeAfterGuard();
+                        guardFailAt = 0;
+                        logDebug('quiz', '已收掉 ' + swept + ' 个弹题浮层（累计 ' + POPUP_GUARD.hidden + ' 次），视频继续播放');
+                        updateStatus('⏭ 已拦截视频弹题，继续播放...');
+                        await sleep(CONFIG.LEARN_IDLE_POLL);
+                        continue;
                     }
-                    manualResume = false;
-                    logDebug('video', '已检测到手动播放，继续监控');
-                    updateStatus('▶ 已检测到手动播放，继续监控视频...');
                 }
-                continue;
-            }
 
-            // 2) 看完 → 进入下一个内容（ended 事件触发或时长到边）
-            if (video.__marEndedFlag || video.ended || (video.duration > 0 && video.currentTime >= video.duration - CONFIG.LEARN_VIDEO_END_MARGIN)) {
-                logDebug('video', '🎬 播放完毕（currentTime=' + (video.currentTime || 0).toFixed(1) + '/duration=' + (video.duration || 0).toFixed(1) + '）');
-                updateStatus('🎬 视频播放完毕');
-                return true;
-            }
+                var popup = findQuizPopup();
+                if (popup) POPUP_GUARD.popupSeenAt = Date.now();
 
-            // 3) 意外暂停（非弹题、非手动等待）→ 尝试恢复
-            if (video.paused && !manualResume && Date.now() - lastAnswerAt > 2500 && Date.now() - lastRetry > 2500) {
-                lastRetry = Date.now();
-                await playVideo(video);
+                // 2) 还有浮层 → 拦不掉就转兜底作答
+                if (popup && POPUP_GUARD.active) {
+                    if (!guardFailAt) guardFailAt = Date.now();
+                    if (Date.now() - guardFailAt < CONFIG.LEARN_VIDEO_GUARD_GRACE) {
+                        // 给浮层一点时间自己消失（有些弹层是淡出动画，节点还在但已经在收）
+                        await sleep(CONFIG.LEARN_IDLE_POLL);
+                        continue;
+                    }
+                    logDebug('quiz', '弹题浮层收不掉（多半它包着播放器），转自动作答');
+                    updateStatus('📝 弹题拦不住，改为自动作答...');
+                }
+
+                if (popup && CONFIG.LEARN_VIDEO_ANSWER_POPUP && Date.now() - lastAnswerAt > 2500) {
+                    lastAnswerAt = Date.now();
+                    guardFailAt = 0;
+                    answerTries++;
+
+                    // 连答 5 次浮层还在：说明这个弹层根本点不动（判据认错了节点，
+                    // 或者它是平台强制的、答完也不给关）。别在这儿死循环，跳过这个视频。
+                    if (answerTries > 5) {
+                        logDebug('quiz', '⚠️ 弹题连续作答 ' + answerTries + ' 次仍未消失，跳过当前视频避免卡死');
+                        updateStatus('⚠️ 弹题反复出现，已跳过当前视频');
+                        return true;
+                    }
+
+                    updateStatus('📝 视频中弹出题目，自动作答...');
+                    logDebug('quiz', '视频中弹出题目，自动作答（第 ' + answerTries + ' 次）...');
+                    await answerQuizPopup(popup);
+
+                    // 拦截还开着：视频大概率压根没停，收掉浮层继续就行，
+                    // 不用等“平台放行”——那个判断在暂停被压住时永远为假。
+                    if (POPUP_GUARD.active) {
+                        await sleep(1200);
+                        hideQuizOverlay(popup);
+                        resumeAfterGuard();
+                        logDebug('quiz', '兜底作答完成，视频继续播放');
+                        updateStatus('✅ 弹题已作答，继续播放');
+                        continue;
+                    }
+
+                    var t0 = Date.now(), resumed = false;
+                    while (Date.now() - t0 < CONFIG.LEARN_QUIZ_RESUME_WAIT) {
+                        await sleep(CONFIG.LEARN_IDLE_POLL);
+                        var vv = findVideo();
+                        if (vv && !vv.paused && vv.currentTime > 0) { resumed = true; break; }
+                    }
+                    if (resumed) {
+                        logDebug('quiz', '✅ 答对，平台放行，视频自动继续');
+                        updateStatus('✅ 题目已答，平台放行，视频自动继续播放');
+                    } else {
+                        logDebug('quiz', '⚠️ 可能答错，视频停止 —— 请手动点播放，脚本持续监控');
+                        updateStatus('⚠️ 答案可能不对，视频已停止 —— 请手动点击播放按钮继续，脚本会继续监控');
+                        manualResume = true;
+                        var v = findVideo();
+                        if (v) {
+                            await new Promise(function (resolve) {
+                                var doneFlag = false;
+                                function fin() { if (doneFlag) return; doneFlag = true; clearInterval(poller); resolve(); }
+                                function check() {
+                                    if (taskState.cancelled || manualWaitFlag) { fin(); return; }
+                                    var c = findVideo();
+                                    if (c && !c.paused) fin();
+                                }
+                                var poller = setInterval(check, 600);
+                                setTimeout(fin, 10 * 60 * 1000);
+                                if (v.addEventListener) v.addEventListener('play', fin, { once: true });
+                            });
+                        }
+                        manualResume = false;
+                        logDebug('video', '已检测到手动播放，继续监控');
+                        updateStatus('▶ 已检测到手动播放，继续监控视频...');
+                    }
+                    continue;
+                }
+
+                // 3) 看完 → 进入下一个内容（ended 事件触发或时长到边）
+                if (video.__marEndedFlag || video.ended || (video.duration > 0 && video.currentTime >= video.duration - CONFIG.LEARN_VIDEO_END_MARGIN)) {
+                    logDebug('video', '🎬 播放完毕（currentTime=' + (video.currentTime || 0).toFixed(1) + '/duration=' + (video.duration || 0).toFixed(1) + '）');
+                    updateStatus('🎬 视频播放完毕');
+                    return true;
+                }
+
+                // 4) 意外暂停（非弹题、非手动等待）→ 尝试恢复
+                if (video.paused && !manualResume && Date.now() - lastAnswerAt > 2500 && Date.now() - lastRetry > 2500) {
+                    lastRetry = Date.now();
+                    await playVideo(video);
+                }
+                await sleep(CONFIG.LEARN_IDLE_POLL);
             }
-            await sleep(CONFIG.LEARN_IDLE_POLL);
+        } finally {
+            // 无论怎么退出（看完/跳过/取消/异常）都要把拦截撤掉，
+            // 否则会一直压着页面上的暂停，用户手动点暂停也没反应
+            stopPopupGuard();
         }
         return false;
     }
