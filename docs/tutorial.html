@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>使用教程 · 中国大学 MOOC 自动化脚本</title>
+<meta name="description" content="中国大学 MOOC 自动化脚本完整使用教程：安装、互评、课堂讨论自动回复、随堂测验一键作答、整章自动学习、设置项说明与问题排查，全部配流程截图。">
+<link rel="canonical" href="https://weiy02.github.io/ChinaMOOC-Auto/tutorial.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="使用教程 · 中国大学 MOOC 自动化脚本">
+<meta property="og:description" content="从安装到整章自动学习，一步一步带截图讲清楚。">
+<meta property="og:url" content="https://weiy02.github.io/ChinaMOOC-Auto/tutorial.html">
+<meta property="og:image" content="https://weiy02.github.io/ChinaMOOC-Auto/assets/og.png">
+<meta name="theme-color" content="#0b0d10">
+<link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+<a class="skip" href="#main">跳到正文</a>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="./">
+      <span class="brand-mark" aria-hidden="true">慕</span>
+      <span class="brand-text">中国大学 MOOC 自动化</span>
+    </a>
+    <nav class="site-nav" aria-label="主导航">
+      <a href="./#features">功能</a>
+      <a href="./tutorial.html">教程</a>
+      <a href="./#start">安装</a>
+      <a href="./#faq">常见问题</a>
+      <a href="./#changelog">更新</a>
+      <a class="nav-cta" href="./#start">一键安装</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <div class="doc-head">
+    <div class="wrap">
+      <p class="crumb"><a href="./">首页</a> <span>/</span> 使用教程</p>
+      <h1>使用教程</h1>
+      <p class="doc-lede">从装上脚本到整章跑完，每一步都配流程截图。赶时间的话，先看 <a href="#video">视频演示</a>，再看 <a href="#learn">自动学习</a> 那一节就够了。</p>
+      <div class="pill-row">
+        <span class="pill">约 8 分钟读完</span>
+        <span class="pill">MOOC + SPOC 通用</span>
+        <span class="pill">配图 + 视频</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap doc-layout">
+
+    <aside class="toc" aria-label="目录">
+      <p class="toc-title">本页目录</p>
+      <nav>
+        <a href="#video"><span>00</span> 视频演示</a>
+        <a href="#install"><span>01</span> 安装脚本</a>
+        <a href="#panel"><span>02</span> 认识面板</a>
+        <a href="#review"><span>03</span> 互评作业</a>
+        <a href="#discuss"><span>04</span> 讨论自动回复</a>
+        <a href="#quiz"><span>05</span> 随堂测验</a>
+        <a href="#learn"><span>06</span> 整章自动学习</a>
+        <a href="#settings"><span>07</span> 设置项</a>
+        <a href="#debug"><span>08</span> 出问题了</a>
+        <a href="#more"><span>09</span> 还是不行？</a>
+      </nav>
+    </aside>
+
+    <article class="doc">
+
+      <!-- ===== 00 视频 ===== -->
+      <section id="video" class="doc-sec">
+        <h2><span class="no">00</span>视频演示</h2>
+        <p>两分钟看完主流程：装好脚本 → 打开学习页 → 点「开始自动学习」→ 视频、文档、测验自动推进。</p>
+
+        <div class="video-shell" data-video="./assets/video/tutorial.mp4" data-poster="./assets/screenshots/00-video-poster.jpg" data-title="中国大学 MOOC 自动化脚本 · 完整演示">
+          <div class="video-ph">
+            <span class="play" aria-hidden="true"></span>
+            <p class="vp-title">演示视频制作中</p>
+            <p class="vp-sub">放一段 <code>tutorial.mp4</code> 到 <code>docs/assets/video/</code>，这里会自动变成播放器</p>
+          </div>
+        </div>
+        <p class="cap-note">视频按章节分段的版本后续会放在这里；想先看图文流程，往下滚。</p>
+      </section>
+
+      <!-- ===== 01 安装 ===== -->
+      <section id="install" class="doc-sec">
+        <h2><span class="no">01</span>安装脚本</h2>
+        <p>脚本本身只是一段 JS，需要一个「脚本管理器」扩展来承载。装哪个都行，功能完全一致。</p>
+
+        <ol class="flow">
+          <li>
+            <h3>装管理器</h3>
+            <p>Chrome / Edge 装 <a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">Tampermonkey</a>，或装 <a href="https://scriptcat.org/" target="_blank" rel="noopener">脚本猫</a>（国内访问更稳）。装完记得在扩展管理里把「允许运行用户脚本」打开。</p>
+            <figure class="shot">
+              <img src="./assets/screenshots/01-install-manager.png" alt="在浏览器扩展商店安装 Tampermonkey" data-shot loading="lazy">
+              <div class="shot-ph"><span>截图位</span><code>01-install-manager.png</code></div>
+              <figcaption>图 1 · 扩展商店里搜索并安装 Tampermonkey</figcaption>
+            </figure>
+          </li>
+          <li>
+            <h3>点一下安装</h3>
+            <p>打开 <a href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener">Greasy Fork</a> 或 <a href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener">脚本猫</a> 的脚本页，点「安装此脚本」，管理器弹出确认界面时点「安装」。</p>
+            <figure class="shot">
+              <img src="./assets/screenshots/02-install-confirm.png" alt="脚本管理器弹出安装确认界面" data-shot loading="lazy">
+              <div class="shot-ph"><span>截图位</span><code>02-install-confirm.png</code></div>
+              <figcaption>图 2 · 管理器里的安装确认页，右下角点「安装」</figcaption>
+            </figure>
+          </li>
+          <li>
+            <h3>打开慕课页面验证</h3>
+            <p>进入 <code>icourse163.org</code> 任意学习页，右侧应该浮出面板。看不到就是没生效——先确认脚本已启用、地址匹配 <code>*://www.icourse163.org/*</code>，再刷新页面。</p>
+          </li>
+        </ol>
+
+        <div class="tip">
+          <strong>手动装也行：</strong>打开 <a href="https://raw.githubusercontent.com/weiy02/ChinaMOOC-Auto/main/main.js" target="_blank" rel="noopener">main.js</a> 复制全文，在管理器里新建脚本粘贴保存。缺点是以后不会自动更新。
+        </div>
+      </section>
+
+      <!-- ===== 02 面板 ===== -->
+      <section id="panel" class="doc-sec">
+        <h2><span class="no">02</span>认识面板</h2>
+        <p>面板是暗色扁平的一块操作台，五个选项卡，一次只显示一个视图。标题栏右上角那个「?」点开是完整说明浮层——所有解释都在里面，面板上只留按钮。</p>
+
+        <figure class="shot">
+          <img src="./assets/screenshots/03-panel-overview.png" alt="脚本面板整体界面，五个选项卡" data-shot loading="lazy">
+          <div class="shot-ph"><span>截图位</span><code>03-panel-overview.png</code></div>
+          <figcaption>图 3 · 面板总览：学习 / 互评 / 讨论 / 日志 / 设置</figcaption>
+        </figure>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>选项卡</th><th>干什么</th></tr></thead>
+            <tbody>
+              <tr><td>学习</td><td>开始自动学习、随堂测验一键完成、页面 DOM 诊断（默认打开的就是它）</td></tr>
+              <tr><td>互评</td><td>一键 / 快速 / 全自动互评、评分修复</td></tr>
+              <tr><td>讨论</td><td>预览回复内容、一键回复当前讨论</td></tr>
+              <tr><td>日志</td><td>开发者日志，复制 / 清空 / 展开大窗</td></tr>
+              <tr><td>设置</td><td>讨论来源、视频倍速、弹题拦截、解除复制、问题反馈</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>底部那条状态栏和「停止」按钮在选项卡之外常驻——任务跑起来之后你切到哪个页签都能看到进度、都能随时喊停。</p>
+      </section>
+
+      <!-- ===== 03 互评 ===== -->
+      <section id="review" class="doc-sec">
+        <h2><span class="no">03</span>互评作业</h2>
+        <p>进到互评列表页，切「互评」页签，按需要点：</p>
+        <ul class="plain">
+          <li><b>一键互评</b>——评当前这一份，一步步走完再停下，适合先试一份；</li>
+          <li><b>快速互评</b>——省掉多余等待，节奏更快；</li>
+          <li><b>全自动互评</b>——连续处理一批，默认批数 10 份，随时可停；</li>
+          <li><b>评分修复</b>——发现某份没评上 / 评错，用它重跑一遍。</li>
+        </ul>
+        <p>评分时脚本会解析每档分的真实分值，选最高分那一档，评语默认「<code>科技改变生活</code>」。在测验、作业、考试答题页上，互评按钮会被主动拒绝——那是防止把题目选项当分数点掉。</p>
+
+        <figure class="shot">
+          <img src="./assets/screenshots/04-review-running.png" alt="互评进行中，面板显示进度" data-shot loading="lazy">
+          <div class="shot-ph"><span>截图位</span><code>04-review-running.png</code></div>
+          <figcaption>图 4 · 互评进行中，底部状态栏显示当前进度，随时可点「停止」</figcaption>
+        </figure>
+      </section>
+
+      <!-- ===== 04 讨论 ===== -->
+      <section id="discuss" class="doc-sec">
+        <h2><span class="no">04</span>课堂讨论自动回复</h2>
+        <p>脚本不编内容，只从<b>已经有人回复过的楼层</b>里挑一条现成答复来发。所以正确姿势是：<b>先预览，再发送</b>。</p>
+
+        <ol class="flow">
+          <li>切到「讨论」页签，点「<b>预览将回复的内容</b>」——浮层会写清楚选中的是哪一层、作者是谁、点赞数和时间，以及即将发出的正文。</li>
+          <li>确认没问题，再点「<b>一键回复当前讨论</b>」。同一条讨论只回复一次，脚本会在本地留痕，重复点会跳过。</li>
+        </ol>
+
+        <figure class="shot">
+          <img src="./assets/screenshots/05-discuss-preview.png" alt="讨论回复预览浮层，显示作者与正文" data-shot loading="lazy">
+          <div class="shot-ph"><span>截图位</span><code>05-discuss-preview.png</code></div>
+          <figcaption>图 5 · 预览浮层：来源楼层、作者、将发出的正文一目了然</figcaption>
+        </figure>
+
+        <p>正文来源可在「设置」里切：<b>最新答复</b>（默认）或<b>点赞最多</b>。超长正文会截到句子边界，默认上限 200 字；昵称、时间、点赞数这些元信息会被剥掉，剥完只剩昵称的楼层直接判无效。</p>
+      </section>
+
+      <!-- ===== 05 随堂测验 ===== -->
+      <section id="quiz" class="doc-sec">
+        <h2><span class="no">05</span>随堂测验一键完成</h2>
+        <p>先分清楚这两个东西，混用会出事：</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th></th><th>随堂测验</th><th>单元测验</th></tr></thead>
+            <tbody>
+              <tr><td>位置</td><td>小节内部，与视频 / 文档平级</td><td>左侧目录里单独一个节点</td></tr>
+              <tr><td>次数</td><td>通常不限次数，可反复重做</td><td>往往只有一次机会</td></tr>
+              <tr><td>脚本</td><td>会作答并提交</td><td>不处理，答题页直接拒绝</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>在随堂测验页面上，点「学习」页签里的「<b>随堂测验：一键完成并提交</b>」，流程是：重新答题（若已答过）→ 取正确答案 → 逐题比对填涂 → 提交 → 处理确认弹窗。</p>
+
+        <figure class="shot">
+          <img src="./assets/screenshots/06-quiz-filled.png" alt="随堂测验已按正确答案填涂" data-shot loading="lazy">
+          <div class="shot-ph"><span>截图位</span><code>06-quiz-filled.png</code></div>
+          <figcaption>图 6 · 按接口答案逐题填涂后的样子</figcaption>
+        </figure>
+
+        <p>答案来源：MOOC 走课件接口，SPOC 走 dwr 响应。安全约束很硬——<b>读不到答案就一个选项都不点、也不提交</b>；有题目对不上时只填不交，把状态写清楚留你手动补完，绝不交白卷。</p>
+
+        <figure class="shot">
+          <img src="./assets/screenshots/07-quiz-result.png" alt="提交成功后的状态栏提示" data-shot loading="lazy">
+          <div class="shot-ph"><span>截图位</span><code>07-quiz-result.png</code></div>
+          <figcaption>图 7 · 提交后状态栏给出结果，失败时会写清原因</figcaption>
+        </figure>
+      </section>
+
+      <!-- ===== 06 自动学习 ===== -->
+      <section id="learn" class="doc-sec">
+        <h2><span class="no">06</span>整章自动学习</h2>
+        <p>这是脚本的主功能。进任意内容页，点「<b>开始自动学习（当前章）</b>」，脚本从这个内容开始，一路往后推：视频播完 → 文档翻页 → 讨论回复 → 随堂测验作答，跨小节、跨章节自动走，直到本章学完。</p>
+
+        <figure class="shot">
+          <img src="./assets/screenshots/08-learn-running.png" alt="自动学习运行中，状态栏显示当前内容" data-shot loading="lazy">
+          <div class="shot-ph"><span>截图位</span><code>08-learn-running.png</code></div>
+          <figcaption>图 8 · 运行中：状态栏显示当前处理到哪个内容</figcaption>
+        </figure>
+
+        <h3>它怎么处理各类内容</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>类型</th><th>行为</th></tr></thead>
+            <tbody>
+              <tr><td>视频</td><td>从头播放（可倍速），播完进入下一个内容；不视频接视频</td></tr>
+              <tr><td>视频中弹题</td><td>默认直接拦截：不暂停、收浮层，一路播到底；拦不住才自动作答</td></tr>
+              <tr><td>文档 / 课件 / PPT</td><td>自动翻页，每页约 1 秒，翻完进下一个</td></tr>
+              <tr><td>富文本 / 节标题</td><td>停留 10 秒后跳转，可点右下角【下一节】提前跳</td></tr>
+              <tr><td>随堂测验</td><td>自动作答并提交，停留 10 秒再走</td></tr>
+              <tr><td>讨论</td><td>自动回复，与「讨论」页签同一套逻辑</td></tr>
+              <tr><td>加载失败页</td><td>快速跳过</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>两个值得知道的按钮与机制</h3>
+        <ul class="plain">
+          <li><b>右下角【下一节】</b>——学习过程中随时出现，嫌某段内容墨迹，点它直接进下一个。</li>
+          <li><b>刷新续跑</b>——中断了不用从头来，刷新页面脚本会接着上次的进度跑；计划存在本地，点「停止」才结束。</li>
+        </ul>
+
+        <figure class="shot">
+          <img src="./assets/screenshots/09-next-button.png" alt="页面右下角的下一节悬浮按钮" data-shot loading="lazy">
+          <div class="shot-ph"><span>截图位</span><code>09-next-button.png</code></div>
+          <figcaption>图 9 · 右下角的【下一节】悬浮按钮</figcaption>
+        </figure>
+
+        <div class="warn">
+          <strong>关于视频弹题的一个重要提醒：</strong>
+          <p>默认策略是把弹题「拦」掉——不放行暂停、浮层一出现就收。这是纯前端拦截，如果平台按「弹题通过数」结算这一段学习时长，视频播完可能不计进度。</p>
+          <p>验证方法：跑一个带弹题的视频，播完后刷新页面看进度涨没涨。没涨就到「设置」里关掉<b>视频弹题拦截</b>，脚本会退回自动作答并提交。</p>
+        </div>
+      </section>
+
+      <!-- ===== 07 设置 ===== -->
+      <section id="settings" class="doc-sec">
+        <h2><span class="no">07</span>设置项</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>设置</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>讨论内容来源</td><td>最新答复 / 点赞最多</td></tr>
+              <tr><td>视频倍速</td><td>0.5x ~ 3x，步进 0.25；平台切清晰度重置后脚本会自动补回</td></tr>
+              <tr><td>视频弹题拦截</td><td>默认开；进度不计时关掉它，退回自动作答</td></tr>
+              <tr><td>解除复制限制</td><td>默认关；开了能复制课件文字，只掐站点的事件拦截，不动浏览器默认行为</td></tr>
+              <tr><td>清除回复记录</td><td>清掉「哪条讨论已回复过」的本地记录</td></tr>
+              <tr><td>问题反馈</td><td>一键打开 GitHub 新建 Issue</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <figure class="shot">
+          <img src="./assets/screenshots/10-settings.png" alt="设置页签的选项列表" data-shot loading="lazy">
+          <div class="shot-ph"><span>截图位</span><code>10-settings.png</code></div>
+          <figcaption>图 10 · 设置页签</figcaption>
+        </figure>
+      </section>
+
+      <!-- ===== 08 排查 ===== -->
+      <section id="debug" class="doc-sec">
+        <h2><span class="no">08</span>出问题了怎么办</h2>
+        <p>按这个顺序走，比反复点按钮有用得多：</p>
+        <ol class="flow">
+          <li>
+            <h3>先看状态栏</h3>
+            <p>脚本拒绝执行时会写清原因（「未检测到互评列表」「没拿到 dwr 试题数据」…）。绝大多数情况状态栏已经告诉你答案了。</p>
+          </li>
+          <li>
+            <h3>再导 DOM 诊断</h3>
+            <p>「学习」页签 →「页面 DOM 诊断」，导出的结构能让作者快速判断是不是平台改版。</p>
+            <figure class="shot">
+              <img src="./assets/screenshots/11-dom-diagnose.png" alt="页面 DOM 诊断导出的结构信息" data-shot loading="lazy">
+              <div class="shot-ph"><span>截图位</span><code>11-dom-diagnose.png</code></div>
+              <figcaption>图 11 · DOM 诊断结果（可复制）</figcaption>
+            </figure>
+          </li>
+          <li>
+            <h3>最后看日志</h3>
+            <p>「日志」页签记录检测结果、跳转决策、异常，带连续行号。点「展开」能看全部（最多 500 条），复制出来就够提 Issue 用了。</p>
+            <figure class="shot">
+              <img src="./assets/screenshots/12-log-expanded.png" alt="日志展开大窗，带行号" data-shot loading="lazy">
+              <div class="shot-ph"><span>截图位</span><code>12-log-expanded.png</code></div>
+              <figcaption>图 12 · 日志展开大窗，行号连续、可复制</figcaption>
+            </figure>
+          </li>
+        </ol>
+
+        <div class="tip">
+          <strong>提 Issue 时附上这两样：</strong>DOM 诊断导出 + 日志里 <code>[type]</code> / <code>[load]</code> / <code>[nav]</code> 三类行。有这两样，改版适配基本一轮就能修完。
+        </div>
+      </section>
+
+      <!-- ===== 09 ===== -->
+      <section id="more" class="doc-sec">
+        <h2><span class="no">09</span>还是不行？</h2>
+        <p>已知问题和细节说明都写在首页的 <a href="./#faq">常见问题</a> 与 <a href="https://github.com/weiy02/ChinaMOOC-Auto/blob/main/README.md" target="_blank" rel="noopener">README</a> 里。仍然解决不了就直接 <a href="https://github.com/weiy02/ChinaMOOC-Auto/issues/new" target="_blank" rel="noopener">提 Issue</a>，按上一节的两样材料附上，回复会快很多。</p>
+        <div class="doc-end">
+          <a class="btn btn-primary" href="./#start"><span>回首页安装</span><small>Greasy Fork / 脚本猫</small></a>
+          <a class="btn btn-ghost" href="https://github.com/weiy02/ChinaMOOC-Auto/issues/new" target="_blank" rel="noopener"><span>反馈问题</span><small>GitHub Issues</small></a>
+        </div>
+      </section>
+
+    </article>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>MIT License · 作者 <a href="https://github.com/weiy02" target="_blank" rel="noopener">weiy02</a></p>
+    <nav>
+      <a href="./">首页</a>
+      <a href="./tutorial.html">教程</a>
+      <a href="https://github.com/weiy02/ChinaMOOC-Auto" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/weiy02/ChinaMOOC-Auto/issues/new" target="_blank" rel="noopener">反馈问题</a>
+    </nav>
+  </div>
+  <p class="disclaimer">本脚本仅用于学习流程辅助，请在平台允许的范围内使用；对因使用产生的后果不承担责任。</p>
+</footer>
+
+<script src="./assets/site.js" defer></script>
+</body>
+</html>
