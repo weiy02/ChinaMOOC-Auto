@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.14.4
+// @version      1.14.5
 // @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目默认直接拦截：不放行暂停、浮层一出现就收掉，视频一路播到底，拦不住时才自动作答并提交、答案优先取课件接口）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
@@ -3897,6 +3897,172 @@
         return isLessonQuizPage();
     }
 
+    // 内容白页时催一次重载：把当前标签再点一下，等对应元素出现。
+    // 平台偶尔会「标签切了、内容区没回填」（请求失败或 SPA 状态没刷新），
+    // 重发一次通常就好了；比默默按「加载失败」跳到下一个内容强。
+    async function nudgeCurrentContent(kind) {
+        var tab = currentContentTab();
+        if (!tab) return false;
+        logDebug('load', '内容没渲染出来，重新点击当前标签催一次（类型=' + kind + '）');
+        updateStatus('🔄 内容没渲染出来，正在重新加载...');
+        realClick(tab);
+        await sleep(600);
+        realClick(tab);
+        var t0 = Date.now();
+        while (Date.now() - t0 < 8000) {
+            if (taskState.cancelled) return false;
+            if (kind === 'video' && findVideo()) return true;
+            if (kind === 'doc' && findDocViewer()) return true;
+            if (kind === 'discussion' && looksLikeDiscussionPage()) return true;
+            await sleep(400);
+        }
+        logDebug('load', '催了一次仍然没渲染出来（类型=' + kind + '）');
+        return false;
+    }
+
+    // 题块迟迟不出现时的自救：干等是最没用的策略（日志里那 15s + 8s 就是这么白等的）。
+    // 三种情况各有一条路，按代价从小到大试：
+    //   ① 页面停在「已提交/查看解析」的结果态 → 点「重做/重新答题」回到作答态；
+    //   ② SPA 点了标签但内容区没回填（XHR 丢包、状态没刷新）→ 把当前标签再点一次；
+    //   ③ 标签已是选中态、再点被平台忽略 → 切到隔壁标签再切回来，逼它真发一次请求。
+    // 全部失败才返回 false，由上层按「单元测验/作业」跳过，并打一份现场摘要。
+    async function retryQuizRender(rounds) {
+        var tab = currentContentTab();
+        if (!tab) { logDebug('quiz', '自救失败：找不到当前内容标签'); return false; }
+        // 标签文字先记下来：后面点「重做/开始答题」可能让标签栏重渲染，旧节点会失效
+        var tabText = cleanText(tab.textContent || '');
+
+        // 课件本身坏了（unitId/lessonId 不匹配）就没什么可救的，别白等几十秒
+        var bodyHead = cleanText(document.body ? document.body.textContent : '').slice(0, 3000);
+        if (/课件不存在|课件加载失败|内容不存在|资源不存在|unitId[\s\S]{0,20}不匹配|lessonId[\s\S]{0,20}不匹配/.test(bodyHead)) {
+            logDebug('quiz', '自救放弃：页面提示课件不存在/加载失败，重试没有意义');
+            return false;
+        }
+
+        // ① 结果态：有「重做」按钮就直接回到作答态
+        var replay = lqFindReAnswer();
+        if (replay) {
+            logDebug('quiz', '自救①：页面停在结果态（有「' + cleanText(replay.textContent).slice(0, 8) + '」），先点它回到作答态');
+            updateStatus('🔄 检测到已作答的测验，先点「重新答题」...');
+            realClick(replay);
+            if (await waitLessonQuizReady(8000)) return true;
+        }
+
+        // ④ 还没开始作答的测验：内容标签里给了「开始答题」这类入口，点进去再等题块。
+        //    只在小节内容标签里这么干（tab 类型=quiz 才会走到这里），且地址不在单元测验路由上；
+        //    按钮文字走白名单，「查看解析/查看答案」这类一律不碰。
+        if (!PAGE_CONFIG.quizUrl.test(location.href)) {
+            var entry = quizEntryButton();
+            if (entry) {
+                var entryText = cleanText(entry.textContent || '').slice(0, 8);
+                logDebug('quiz', '自救④：检测到测验入口「' + entryText + '」，点进去再等题块');
+                updateStatus('🔄 点开测验入口「' + entryText + '」...');
+                realClick(entry);
+                if (await waitLessonQuizReady(8000)) return true;
+            }
+        }
+
+        var prevTab = null;
+        var tabs = contentTabs();
+        var myIdx = tabs.indexOf(tab);
+        if (myIdx > 0) prevTab = tabs[myIdx - 1];
+
+        for (var r = 0; r < rounds; r++) {
+            if (taskState.cancelled) return false;
+
+            // ② 重新点当前标签
+            logDebug('quiz', '自救②：重新点击当前内容标签（第 ' + (r + 1) + ' 次）');
+            updateStatus('🔄 测验内容没渲染出来，重新加载当前内容（第 ' + (r + 1) + ' 次）...');
+            tab = findContentTabByText(tabText) || currentContentTab() || tab;
+            realClick(tab);
+            await sleep(700);
+            realClick(tab);
+            if (await waitLessonQuizReady(6000)) {
+                logDebug('quiz', '自救②成功：重渲染后题块已出现');
+                return true;
+            }
+
+            // ③ 切到隔壁再切回来（只做一次，代价最大）
+            if (r === 0 && prevTab) {
+                logDebug('quiz', '自救③：切到相邻内容再切回来，逼平台重新请求本课件');
+                updateStatus('🔄 切走再切回，强制平台重新加载测验...');
+                var prevText = cleanText(prevTab.textContent || '');
+                var p = findContentTabByText(prevText) || prevTab;
+                realClick(p);
+                await sleep(1500);
+                var back = findContentTabByText(tabText);
+                if (back) {
+                    realClick(back);
+                    if (await waitLessonQuizReady(8000)) {
+                        logDebug('quiz', '自救③成功：切回后题块已出现');
+                        return true;
+                    }
+                }
+            }
+        }
+
+        logDebug('quiz', '自救全部失败。现场摘要：' + quizGiveUpDigest());
+        return false;
+    }
+
+    // 「还没开始作答」的测验入口按钮。只认开始/继续类文字，
+    // 「查看解析 / 查看答案 / 查看成绩」是结果态，点进去也答不了题，所以不碰。
+    function quizEntryButton() {
+        var els = document.querySelectorAll('button, a, [role="button"]');
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (!isVisible(el) || el.disabled) continue;
+            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-log-overlay, #mar-float-next')) continue;
+            var t = cleanText(el.textContent || el.value || '');
+            if (!t || t.length > 12) continue;
+            if (/^(开始答题|继续答题|开始测验|立即答题|进入测验|开始作答|继续作答)$/.test(t)) return el;
+        }
+        return null;
+    }
+
+    // 按标签文字找内容标签（重渲染后旧节点会失效，不能继续用它）
+    function findContentTabByText(text) {
+        var t = cleanText(text).slice(0, 30);
+        if (!t) return null;
+        var tabs = contentTabs();
+        for (var i = 0; i < tabs.length; i++) {
+            if (cleanText(tabs[i].textContent || '').slice(0, 30) === t) return tabs[i];
+        }
+        return null;
+    }
+
+    // 放弃作答时把现场说清楚：是没有题、还是只有个入口按钮、还是压根没加载。
+    // 免得下次又是「跳过」两个字，谁也判断不了该修哪儿。
+    function quizGiveUpDigest() {
+        var bits = [];
+        var kind = contentKindFromTab(currentContentTab());
+        bits.push('标签类型=' + (kind || '?'));
+
+        var radios = document.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+        var visRadio = 0;
+        for (var i = 0; i < radios.length; i++) {
+            if (isVisible(radios[i]) || isVisible(radios[i].parentElement)) visRadio++;
+        }
+        bits.push('可见单选框=' + visRadio);
+        bits.push('题块类名命中=' + (hasVisibleQuestionBlocks() ? '是' : '否'));
+
+        // 页面上有没有「开始答题 / 继续答题 / 查看测验」这类入口按钮
+        var btns = document.querySelectorAll('button, a, [role="button"]');
+        var entries = [];
+        for (var b = 0; b < btns.length && entries.length < 4; b++) {
+            var t = cleanText(btns[b].textContent || '').slice(0, 10);
+            if (!t) continue;
+            if (!/开始答题|继续答题|开始测验|进入测验|查看测验|查看解析|立即答题/.test(t)) continue;
+            entries.push(t);
+        }
+        if (entries.length) bits.push('入口按钮[' + entries.join(' / ') + ']');
+
+        var body = cleanText(document.body ? document.body.textContent : '').slice(0, 4000);
+        if (/课件不存在|加载失败|内容不存在/.test(body)) bits.push('页面提示课件不存在/加载失败');
+        else if (/已提交|本次得分|查看答案|正确答案/.test(body)) bits.push('页面是结果/解析态');
+        return bits.join('，');
+    }
+
     // 是否停在某个课件内容页——随堂测验一定嵌在这里面。
     // 关键：不能只看 URL。icourse163 的老版 hash 路由把单元测验、作业、已交卷的
     // 答案解析都挂在 #/learn/content 下，只看地址会把单元测验当成随堂测验。
@@ -3937,6 +4103,24 @@
         );
         for (var i = 0; i < els.length; i++) {
             if (isVisible(els[i])) return true;
+        }
+        // 类名兜不住的版式：当前内容标签明确说是测验，页面里又真有可见的单选/多选框，
+        // 那按题块算。否则会出现「标签=quiz、题块类名不认识」→ 等满 15 秒 → 被当成
+        // 单元测验跳过。加标签类型这个门槛，是为了不在视频弹题浮层、讨论区上误判。
+        if (contentKindFromTab(currentContentTab()) === 'quiz' && hasVisibleChoiceInputs()) return true;
+        return false;
+    }
+
+    // 页面上是否存在「可见的」单选/多选框（opacity:0 盖假图标的也算）
+    function hasVisibleChoiceInputs() {
+        var inputs = document.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+        var n = 0;
+        for (var i = 0; i < inputs.length; i++) {
+            var inp = inputs[i];
+            if (inp.closest && inp.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-log-overlay')) continue;
+            if (!isVisible(inp) && !isVisible(inp.parentElement)) continue;
+            n++;
+            if (n >= 2) return true;
         }
         return false;
     }
@@ -5739,10 +5923,21 @@
             // 让下游（如随堂测验的等待窗口）再争取一次，而不是直接判「加载失败」跳过。
             var lateKind = contentKindFromTab(currentContentTab());
             if (lateKind) {
-                type = lateKind;
                 var kindName = { quiz: '测验', video: '视频', doc: '文档', discussion: '讨论' }[lateKind] || lateKind;
                 logDebug('load', '内容就绪超时，但当前标签类型=' + lateKind + '，按该类型继续');
-                updateStatus('⚠️ 内容渲染较慢，按标签类型（' + kindName + '）继续尝试...');
+                // 白页多半是「标签切了、内容区没回填」。先催一次重载，
+                // 别默默按超时跳过——这是「自动学习跳过不完成」的另一半来源。
+                if (lateKind !== 'quiz' && await nudgeCurrentContent(lateKind)) {
+                    logDebug('load', '重新加载后内容已就绪（' + lateKind + '）');
+                    ready = true;
+                } else {
+                    updateStatus('⚠️ 内容渲染较慢，按标签类型（' + kindName + '）继续尝试...');
+                }
+            }
+            if (ready) {
+                type = detectContentType();
+            } else if (lateKind) {
+                type = lateKind;
             } else {
                 updateStatus('⚠️ 内容加载超时（15 秒未渲染出来），按加载失败跳过...');
                 type = 'missing';
@@ -5777,6 +5972,12 @@
             var quizReady = false;
             if (CONFIG.LEARN_AUTO_QUIZ) {
                 quizReady = await waitLessonQuizReady(CONFIG.LEARN_QUIZ_READY_WAIT);
+                // 标签说是测验、页面却一块题都没有：这不是「单元测验」，多半是没渲染出来
+                //（或停在已提交的结果态）。干等只会白等，交给自救流程再争取两次。
+                if (!quizReady && contentKindFromTab(currentContentTab()) === 'quiz') {
+                    logDebug('learn', 'quiz：题块未出现，启动自救（重做/重渲染/切走再切回）');
+                    quizReady = await retryQuizRender(2);
+                }
             } else {
                 logDebug('learn', 'quiz：LEARN_AUTO_QUIZ 已关闭，不作答');
             }
@@ -5802,9 +6003,8 @@
                     logDebug('learn', 'quiz：CONFIG.LEARN_AUTO_QUIZ=false，按配置不作答');
                     updateStatus('⏭ 已关闭随堂测验自动作答，直接进入下一个内容...');
                 } else {
-                    logDebug('learn', 'quiz：等了 ' + CONFIG.LEARN_QUIZ_READY_WAIT
-                        + 'ms 仍不是随堂测验（单元测验/作业/考试页），不作答，跳过');
-                    updateStatus('⏭ 非随堂测验内容：不作答，直接进入下一个内容...');
+                    logDebug('learn', 'quiz：等待 + 自救都没拿到题块（' + quizGiveUpDigest() + '），不作答，跳过');
+                    updateStatus('⏭ 测验页没渲染出题目：不作答，直接进入下一个内容（日志有现场摘要）');
                 }
                 await sleep(CONFIG.LEARN_QUIZ_VISIT_MS);
                 done = true;
