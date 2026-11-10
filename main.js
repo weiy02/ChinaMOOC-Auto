@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.14.3
+// @version      1.14.4
 // @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目默认直接拦截：不放行暂停、浮层一出现就收掉，视频一路播到底，拦不住时才自动作答并提交、答案优先取课件接口）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
@@ -2817,36 +2817,130 @@
         return !!SPOC_DWR.paper;
     }
 
+    // dwr 里的布尔字段未必真是 boolean：icourse163 常见 "true"/"false" 字符串、1/0 数字，
+    // 也可能改用 right / selected 之类的别名。写成 `o.answer === true` 会把正确答案全丢掉，
+    // 表现出来就是「题对上了但一个选项都没勾」。
+    function lqTruthy(v) {
+        if (v === true) return true;
+        if (v === false || v === null || v === undefined) return false;
+        if (typeof v === 'number') return v !== 0;
+        var s = String(v).trim().toLowerCase();
+        return s === 'true' || s === 't' || s === 'y' || s === 'yes' || s === '1';
+    }
+
+    // 按优先级取第一个有值的字段
+    function lqPick(o, keys, dft) {
+        if (!o) return dft;
+        for (var i = 0; i < keys.length; i++) {
+            var v = o[keys[i]];
+            if (v !== null && v !== undefined && v !== '') return v;
+        }
+        return dft;
+    }
+
+    // 选项数组的字段名各版式都不同，挨个试
+    function lqOptionArray(q) {
+        var v = lqPick(q, [
+            'optionDtos', 'options', 'optionList', 'optionVoList', 'optionDtoList',
+            'questionOptions', 'optionDto', 'items',
+        ], null);
+        if (v && !Array.isArray(v) && typeof v === 'object') v = [v];
+        return Array.isArray(v) ? v : [];
+    }
+
+    // "A" / "AB" / "A,B" / "（A）" → [0] / [0,1]
+    // SPOC 的 correctAnswer 常常只给选项字母，不给选项 ID。
+    function lqLettersToIndexes(raw, count) {
+        var out = [];
+        var m = String(raw === null || raw === undefined ? '' : raw).toUpperCase().match(/[A-H]/g);
+        if (!m) return out;
+        for (var i = 0; i < m.length; i++) {
+            var idx = m[i].charCodeAt(0) - 65;
+            if (idx < 0) continue;
+            if (count && idx >= count) continue;
+            if (out.indexOf(idx) === -1) out.push(idx);
+        }
+        return out;
+    }
+
+    var LQ_OPT_ID_KEYS = ['id', 'optionId', 'oid', 'optionID'];
+    var LQ_OPT_TEXT_KEYS = ['content', 'label', 'title', 'optionContent', 'text', 'optionTitle'];
+    var LQ_TITLE_KEYS = [
+        'plainTextTitle', 'title', 'content', 'stem', 'questionTitle',
+        'contentTitle', 'questionContent', 'name', 'description',
+    ];
+
     function spocParsePaper(paper) {
-        var list = paper && (paper.objectiveQList || paper.questionList);
+        var list = paper && (paper.objectiveQList || paper.questionList || paper.questionVoList);
         if (!list || !list.length) return [];
         var out = [];
         for (var i = 0; i < list.length; i++) {
             var q = list[i];
             if (!q) continue;
-            var opts = q.optionDtos || q.options || [];
-            var ids = [], labels = [];
-            for (var j = 0; j < opts.length; j++) {
-                var o = opts[j];
+            var opts = lqOptionArray(q);
+            var ids = [], labels = [], letters = [], allLabels = [];
+            var j, o, oid, otext;
+
+            for (j = 0; j < opts.length; j++) {
+                o = opts[j];
                 if (!o) continue;
-                if (o.answer === true || o.isAnswer === true || o.correct === true) {
-                    if (o.id !== null && o.id !== undefined) ids.push(String(o.id));
-                    labels.push(lqStripTags(o.content || o.label || o.title || ''));
+                otext = lqStripTags(lqPick(o, LQ_OPT_TEXT_KEYS, ''));
+                if (cleanText(otext)) allLabels.push(otext);
+                var flag = lqPick(o, ['answer', 'isAnswer', 'correct', 'right', 'correctFlag', 'isCorrect'], false);
+                if (!lqTruthy(flag)) continue;
+                oid = lqPick(o, LQ_OPT_ID_KEYS, null);
+                if (oid !== null) ids.push(String(oid));
+                letters.push(String.fromCharCode(65 + j));
+                if (cleanText(otext)) labels.push(otext);
+            }
+
+            var ca = lqPick(q, ['correctAnswer', 'standardAnswer', 'answer', 'rightAnswer', 'key'], '');
+
+            // 兜底一：correctAnswer 是字母形态，按选项下标映射
+            if (ids.length === 0 && labels.length === 0 && ca) {
+                var idxs = lqLettersToIndexes(lqStripTags(ca), opts.length);
+                for (j = 0; j < idxs.length; j++) {
+                    letters.push(String.fromCharCode(65 + idxs[j]));
+                    var oo = opts[idxs[j]];
+                    if (!oo) continue;
+                    oid = lqPick(oo, LQ_OPT_ID_KEYS, null);
+                    if (oid !== null) ids.push(String(oid));
+                    otext = lqStripTags(lqPick(oo, LQ_OPT_TEXT_KEYS, ''));
+                    if (cleanText(otext)) labels.push(otext);
                 }
             }
+
+            // 兜底二：correctAnswer 直接写的是选项文案（少数课程会这么存）
+            if (ids.length === 0 && labels.length === 0 && ca) {
+                var flat = lqKey(lqStripTags(ca));
+                if (flat) {
+                    for (j = 0; j < allLabels.length; j++) {
+                        var cand = lqOptKey(allLabels[j]);
+                        if (cand && (cand === flat || flat.indexOf(cand) !== -1)) {
+                            labels.push(allLabels[j]);
+                            oid = lqPick(opts[j], LQ_OPT_ID_KEYS, null);
+                            if (oid !== null) ids.push(String(oid));
+                        }
+                    }
+                }
+            }
+
             var blanks = [];
-            if (q.correctAnswer) {
-                var segs = lqStripTags(q.correctAnswer).split('#');
+            if (ca && ids.length === 0 && labels.length === 0) {
+                var segs = lqStripTags(ca).split('#');
                 for (var s = 0; s < segs.length; s++) {
                     var seg = cleanText(segs[s]);
                     if (seg) blanks.push(seg);
                 }
             }
+
             out.push({
-                type: q.type,
-                title: lqStripTags(q.plainTextTitle || q.title || ''),
+                type: lqPick(q, ['type', 'questionType', 'typeId'], ''),
+                title: lqStripTags(lqPick(q, LQ_TITLE_KEYS, '')),
                 ids: ids,
                 labels: labels,
+                letters: letters,
+                allLabels: allLabels,
                 blanks: blanks,
             });
         }
@@ -2993,6 +3087,32 @@
 
         var inputs = root.querySelectorAll(shapeSel);
         var seen = [];
+
+        // 兜底一：按 name 分组。单选/多选的同题选项一定共用一个 name，
+        // 这比「往上爬到含 2 个 input 的祖先」可靠得多——SPOC 的选项常常平铺在
+        // 一个 .j-list 里，往上爬会把整页的题并成一题（题干糊成一大坨，必然匹配不上）。
+        var byName = {}, order = [];
+        for (i = 0; i < inputs.length; i++) {
+            var nm = inputs[i].getAttribute && inputs[i].getAttribute('name');
+            if (!nm) continue;
+            if (!byName[nm]) { byName[nm] = []; order.push(nm); }
+            byName[nm].push(inputs[i]);
+        }
+        for (var n = 0; n < order.length && out.length < LESSON_QUIZ.MAX_BLOCKS; n++) {
+            var group = byName[order[n]];
+            if (group.length < 2) continue;
+            var wrapEl = lqCommonAncestor(group);
+            if (!wrapEl || seen.indexOf(wrapEl) !== -1) continue;
+            if (!isVisible(wrapEl)) continue;
+            if (wrapEl.querySelector('.u-questionItem')) continue;
+            // 这个祖先里若混进了别的 name，说明分组太粗，宁可不认
+            if (lqDistinctNames(wrapEl, shapeSel) > 1) continue;
+            seen.push(wrapEl);
+            out.push(wrapEl);
+        }
+        if (out.length > 0) return lqKeepInnermost(out);
+
+        // 兜底二：从输入框往上爬，爬到「同一题的所有选项」那个容器为止
         for (i = 0; i < inputs.length && out.length < LESSON_QUIZ.MAX_BLOCKS; i++) {
             if (!isVisible(inputs[i])) continue;
             var node = inputs[i].parentElement, hops = 0;
@@ -3009,8 +3129,35 @@
         return out;
     }
 
-    // 题干：把选项（label/input/选项容器）整个摘掉，剩下的才是题面。
-    // 直接取 block.querySelector('p') 不可靠——有的版式选项本身也是 <p>。
+    // 一组节点的最近公共祖先
+    function lqCommonAncestor(nodes) {
+        if (!nodes || !nodes.length) return null;
+        var node = nodes[0].parentElement;
+        while (node) {
+            var all = true;
+            for (var i = 0; i < nodes.length; i++) {
+                if (!node.contains(nodes[i])) { all = false; break; }
+            }
+            if (all) return node;
+            node = node.parentElement;
+        }
+        return null;
+    }
+
+    function lqDistinctNames(el, sel) {
+        var list = el.querySelectorAll(sel);
+        var names = [];
+        for (var i = 0; i < list.length; i++) {
+            var nm = list[i].getAttribute && list[i].getAttribute('name');
+            if (nm && names.indexOf(nm) === -1) names.push(nm);
+        }
+        return names.length;
+    }
+
+    // 题干：把选项整个摘掉，剩下的才是题面。
+    // 删节点删不干净的地方（选项是裸 <li>、没有 label 也没 class），
+    // 再按选项文案做一次字符串减法——不然后半截选项混进题干，
+    // 归一化后和接口标题差几千字，匹配必然失败。
     function lqBlockText(block) {
         var clone = block.cloneNode(true);
         var drop = clone.querySelectorAll(
@@ -3020,7 +3167,16 @@
         for (var i = drop.length - 1; i >= 0; i--) {
             if (drop[i].parentNode) drop[i].parentNode.removeChild(drop[i]);
         }
-        return cleanText(clone.textContent || '');
+        var text = cleanText(clone.textContent || '');
+
+        var opts = lqOptions(block);
+        for (var j = 0; j < opts.length; j++) {
+            var t = cleanText(opts[j].text);
+            if (!t || t.length < 2) continue;
+            var at = text.indexOf(t);
+            if (at !== -1) text = cleanText(text.slice(0, at) + ' ' + text.slice(at + t.length));
+        }
+        return text;
     }
 
     function lqOptionText(el) {
@@ -3035,10 +3191,21 @@
 
     function lqOptions(block) {
         var out = [];
+        var seen = [];
         var i;
+
+        function add(el, input, text) {
+            if (!el || !input) return;
+            if (seen.indexOf(el) !== -1) return;
+            seen.push(el);
+            out.push({ el: el, input: input, text: text });
+        }
+
         var labels = block.querySelectorAll('label');
         for (i = 0; i < labels.length; i++) {
             var lb = labels[i];
+            // 只判 label 可见，不判 input：SPOC 常把原生 radio 设成 opacity:0 盖一层假图标，
+            // 按 input 判会把整题的选项全丢掉。
             if (!isVisible(lb)) continue;
             var input = lb.querySelector('input');
             if (!input) {
@@ -3049,18 +3216,53 @@
                 }
             }
             if (!input) continue;
-            out.push({ el: lb, input: input, text: lqOptionText(lb) });
+            add(lb, input, lqOptionText(lb));
         }
-        if (out.length === 0) {
-            // 有的版式把 input 放在 label 外面
-            var inputs = block.querySelectorAll('input[type="radio"], input[type="checkbox"]');
-            for (i = 0; i < inputs.length; i++) {
-                if (!isVisible(inputs[i]) || inputs[i].disabled) continue;
-                var wrap = (inputs[i].closest && inputs[i].closest('label')) || inputs[i].parentElement;
-                out.push({ el: wrap, input: inputs[i], text: lqOptionText(wrap) });
-            }
+        if (out.length > 0) return out;
+
+        // 有的版式把 input 放在 label 外面（或者干脆没有 label）
+        var inputs = block.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+        for (i = 0; i < inputs.length; i++) {
+            var inp = inputs[i];
+            if (inp.disabled) continue;
+            var wrap = lqWrapOfInput(inp);
+            if (!wrap || !isVisible(wrap)) continue;
+            var txt = lqOptionText(wrap);
+            // 文字可能在兄弟节点里（input + span 并排）
+            if (!cleanText(txt) && wrap.nextElementSibling) txt = lqOptionText(wrap.nextElementSibling);
+            if (!cleanText(txt) && wrap.parentElement) txt = lqOptionText(wrap.parentElement);
+            add(wrap, inp, txt);
         }
         return out;
+    }
+
+    // 「这一个选项」的容器：从 input 往上走，取第一个只包含它自己一个选择型 input 的祖先。
+    // 直接 closest('li') 会把「一题 = 一个 li、四个选项都在里面」的版式拼成一坨文案。
+    function lqWrapOfInput(inp) {
+        var sel = 'input[type="radio"], input[type="checkbox"]';
+        var node = inp.parentElement, hops = 0;
+        while (node && hops < 4) {
+            if (node.querySelectorAll(sel).length <= 1) return node;
+            node = node.parentElement;
+            hops++;
+        }
+        return (inp.closest && inp.closest('label, li, dd, .option, [class*="option"], [class*="Option"]'))
+            || inp.parentElement;
+    }
+
+    // 选项文案比对用的归一化：先剥掉开头的选项字母/序号（A. / （A） / 1、）再归一化。
+    // 接口 label 常常不带字母，页面却渲染成「A、xxx」，不剥前缀就永远差一点。
+    function lqOptKey(s) {
+        var t = lqStripTags(s);
+        t = t.replace(/^[\s\(（\[【]*[A-Ha-h][\s\)）\]】\.、,，:：．]*/, '');
+        t = t.replace(/^[\s\(（\[【]*\d{1,2}[\s\)）\]】\.、,，:：．]+/, '');
+        return lqKey(t);
+    }
+
+    // 选项自带的字母前缀（页面上「A、」「B.」的那种）
+    function lqOptionLeadLetter(text) {
+        var m = cleanText(text).match(/^[\s\(（\[【]*([A-Ha-h])(?=[\s\)）\]】\.、,，:：．]|$)/);
+        return m ? m[1].toUpperCase() : '';
     }
 
     // input 上所有可能是「平台选项 ID」的数字段。要求整段比对：
@@ -3088,15 +3290,23 @@
         var opts = q.options || q.optionList || [];
         var rawIds = q.correctOptionIds || q.correctOptionId || [];
         if (typeof rawIds === 'string') rawIds = rawIds.split(/[,\s]+/);
-        var ids = [], labels = [], i, j;
+        var ids = [], labels = [], letters = [], allLabels = [], i, j;
+
+        for (i = 0; i < opts.length; i++) {
+            var t = lqStripTags(lqPick(opts[i], LQ_OPT_TEXT_KEYS, ''));
+            if (cleanText(t)) allLabels.push(t);
+        }
 
         if (rawIds && rawIds.length) {
-            for (i = 0; i < rawIds.length; i++) if (rawIds[i] !== null && rawIds[i] !== undefined && rawIds[i] !== '') ids.push(String(rawIds[i]));
+            for (i = 0; i < rawIds.length; i++) {
+                if (rawIds[i] !== null && rawIds[i] !== undefined && rawIds[i] !== '') ids.push(String(rawIds[i]));
+            }
         }
         for (i = 0; i < ids.length; i++) {
             for (j = 0; j < opts.length; j++) {
                 if (String(opts[j].id) === ids[i]) {
-                    labels.push(lqStripTags(opts[j].label || opts[j].content || ''));
+                    labels.push(lqStripTags(lqPick(opts[j], LQ_OPT_TEXT_KEYS, '')));
+                    letters.push(String.fromCharCode(65 + j));
                     break;
                 }
             }
@@ -3105,10 +3315,12 @@
         if (labels.length === 0) {
             for (i = 0; i < opts.length; i++) {
                 var o = opts[i];
-                if (o && (o.answer === true || o.isAnswer === true || o.correct === true)) {
-                    labels.push(lqStripTags(o.label || o.content || ''));
-                    if (o.id) ids.push(String(o.id));
-                }
+                if (!o) continue;
+                var flag = lqPick(o, ['answer', 'isAnswer', 'correct', 'right', 'correctFlag', 'isCorrect'], false);
+                if (!lqTruthy(flag)) continue;
+                labels.push(lqStripTags(lqPick(o, LQ_OPT_TEXT_KEYS, '')));
+                letters.push(String.fromCharCode(65 + i));
+                if (o.id) ids.push(String(o.id));
             }
         }
         // 填空题：correctAnswer 形如「答案#解析」，多空时用 # 分段
@@ -3125,29 +3337,47 @@
             title: lqStripTags(q.title || q.plainTextTitle || ''),
             ids: ids,
             labels: labels,
+            letters: letters,
+            allLabels: allLabels,
             blanks: blanks,
         };
     }
 
-    // 答案获取：MOOC 走课件接口；SPOC 先试同一接口（两套前端可能共用），
-    // 拿不到再走 dwr 的 paper。
-    async function lqFetchQuestions(ctx) {
+    // 答案获取：MOOC 走课件接口；SPOC 两份来源都试，按「和页面题块对得上几题」择优。
+    // 之前是「接口只要 ok 就收下」，但 SPOC 下这个接口经常能返回、返回的却是
+    // 整个单元的题或另一份试卷，于是界面表现成「答案和题目全对不上」，
+    // 真正对的 dwr paper 反而永远轮不到。
+    async function lqFetchQuestions(ctx, blocks) {
         var apiRes = await lqFetchFromApi(ctx);
-        if (apiRes.ok) return apiRes;
         if (!isSpocCourse()) return apiRes;
 
-        logDebug('quiz', 'SPOC：接口取答案失败（' + apiRes.error + '），改走 dwr paper');
-        var got = await spocEnsurePaper(12000);
-        if (!got || !SPOC_DWR.paper) {
-            return {
-                ok: false,
-                error: 'SPOC 没拿到 dwr 试题数据（paper）：请手动切到别的「测试」再切回来，或刷新页面后重试',
-            };
+        var apiScore = (apiRes.ok && blocks && blocks.length) ? lqMatchScore(apiRes.questions, blocks) : -1;
+        if (apiRes.ok && blocks && blocks.length && apiScore >= blocks.length) {
+            logDebug('quiz', 'SPOC：课件接口 ' + apiScore + '/' + blocks.length + ' 题全对上，直接采用');
+            return apiRes;
         }
-        var qs = spocParsePaper(SPOC_DWR.paper);
-        if (qs.length === 0) return { ok: false, error: 'dwr 数据里没有 objectiveQList 题目' };
-        logDebug('quiz', 'SPOC：从 dwr paper 解析到 ' + qs.length + ' 道题');
-        return { ok: true, questions: qs };
+
+        logDebug('quiz', 'SPOC：改试 dwr paper（课件接口＝'
+            + (apiRes.ok ? '对上 ' + apiScore + '/' + blocks.length + ' 题' : '失败：' + apiRes.error) + '）');
+        var got = await spocEnsurePaper(12000);
+        if (got && SPOC_DWR.paper) {
+            var qs = spocParsePaper(SPOC_DWR.paper);
+            if (qs.length) {
+                var dwrScore = (blocks && blocks.length) ? lqMatchScore(qs, blocks) : qs.length;
+                logDebug('quiz', 'SPOC：dwr paper 解析到 ' + qs.length + ' 题，与页面对上 '
+                    + dwrScore + '/' + (blocks ? blocks.length : 0) + ' 题');
+                if (!apiRes.ok || dwrScore >= apiScore) return { ok: true, questions: qs, source: 'dwr' };
+            } else {
+                logDebug('quiz', 'SPOC：dwr paper 里没解析出 objectiveQList 题目');
+            }
+        }
+
+        if (apiRes.ok) return apiRes;
+        return {
+            ok: false,
+            error: 'SPOC 没拿到可用的试题数据：课件接口失败（' + apiRes.error
+                + '），dwr paper 也没捕获到。请手动切到别的「测试」再切回来，或刷新页面后重试',
+        };
     }
 
     async function lqFetchFromApi(ctx) {
@@ -3191,41 +3421,90 @@
 
     // 页面上这一题的题面 → 接口里的哪一题。优先精确相等，其次互相包含
     // （页面多题号/分值、或者文本被截断都会导致两边长度不同）。
-    function lqMatchQuestion(questions, text, used) {
+    // 都失败时再用「选项集合重合度」反查——题干是图片、公式或者富文本时，
+    // 文字提取出来跟接口标题完全不像，但选项是一模一样的。
+    function lqMatchQuestion(questions, text, used, block) {
         var key = lqKey(text);
-        if (!key) return null;
         var best = null, bestScore = 0;
+        if (key) {
+            for (var i = 0; i < questions.length; i++) {
+                var q = questions[i];
+                if (used.indexOf(q) !== -1) continue;
+                var k = lqKey(q.title);
+                if (!k) continue;
+                var score = 0;
+                if (k === key) score = 100000 + k.length;
+                else if (key.indexOf(k) !== -1) score = 50000 + k.length;
+                else if (k.indexOf(key) !== -1) score = 40000 + key.length;
+                else if (k.length >= 10 || key.length >= 10) {
+                    // 两边都有增删时用五字滑窗覆盖率兜底，命中率够高才认
+                    var ratio = lqCoverage(k, key);
+                    if (ratio >= 0.85) score = 10000 + Math.round(ratio * 100);
+                }
+                if (score > bestScore) { bestScore = score; best = q; }
+            }
+        }
+        if (best) return best;
+        return lqMatchByOptions(questions, block, used);
+    }
+
+    // 靠选项集合反查题目：只认「选项数 ≥3 且重合率 ≥0.8 且唯一最优」的情况。
+    // 判断题（只有两项、且各题选项都叫「正确/错误」）刻意不参与，避免张冠李戴。
+    function lqMatchByOptions(questions, block, used) {
+        if (!block) return null;
+        var pageOpts = [];
+        var rawOpts = lqOptions(block);
+        for (var a = 0; a < rawOpts.length; a++) {
+            var t = lqOptKey(rawOpts[a].text);
+            if (t) pageOpts.push(t);
+        }
+        if (pageOpts.length < 3) return null;
+
+        var best = null, bestHit = 0, tie = false;
         for (var i = 0; i < questions.length; i++) {
             var q = questions[i];
             if (used.indexOf(q) !== -1) continue;
-            var k = lqKey(q.title);
-            if (!k) continue;
-            var score = 0;
-            if (k === key) score = 100000 + k.length;
-            else if (key.indexOf(k) !== -1) score = 50000 + k.length;
-            else if (k.indexOf(key) !== -1) score = 40000 + key.length;
-            else if (k.length >= 10 || key.length >= 10) {
-                // 两边都有增删时用五字滑窗覆盖率兜底，命中率够高才认
-                var shorter = k.length <= key.length ? k : key;
-                var longer = k.length <= key.length ? key : k;
-                var hit = 0, total = 0;
-                for (var s = 0; s + 5 <= shorter.length; s += 5) {
-                    total++;
-                    if (longer.indexOf(shorter.substr(s, 5)) !== -1) hit++;
+            var apiOpts = q.allLabels || [];
+            if (apiOpts.length !== pageOpts.length) continue;
+            var hit = 0;
+            for (var j = 0; j < pageOpts.length; j++) {
+                for (var k = 0; k < apiOpts.length; k++) {
+                    var ak = lqOptKey(apiOpts[k]);
+                    if (!ak) continue;
+                    if (ak === pageOpts[j] || ak.indexOf(pageOpts[j]) !== -1 || pageOpts[j].indexOf(ak) !== -1) { hit++; break; }
                 }
-                if (total > 0 && hit / total >= 0.85) score = 10000 + shorter.length;
             }
-            if (score > bestScore) { bestScore = score; best = q; }
+            var rate = hit / pageOpts.length;
+            if (rate < 0.8) continue;
+            if (hit > bestHit) { bestHit = hit; best = q; tie = false; }
+            else if (hit === bestHit) tie = true;
         }
+        if (!best || tie) return null;
+        logDebug('quiz', '题干对不上，按选项集合反查命中 →「' + cleanText(best.title).slice(0, 24) + '」');
         return best;
     }
 
-    // 该题应该勾哪几个选项（返回选项下标）。先用平台 ID 整段比对，
-    // 认不出来再用正确选项的文案匹配。
+    // 「答案题」和「页面题块」整体能对上多少题，用来在两份答案源之间择优
+    function lqMatchScore(questions, blocks) {
+        if (!questions || !questions.length || !blocks || !blocks.length) return 0;
+        var used = [], hit = 0;
+        for (var i = 0; i < blocks.length; i++) {
+            var q = lqMatchQuestion(questions, lqBlockText(blocks[i]), used, blocks[i]);
+            if (q) { used.push(q); hit++; }
+        }
+        return hit;
+    }
+
+    // 该题应该勾哪几个选项（返回选项下标）。三级策略，前一级没结果才走下一级：
+    //   ① 平台选项 ID 整段比对（最可靠，但页面往往不暴露 ID）；
+    //   ② 正确选项文案比对（剥掉「A、」前缀后做包含关系打分）；
+    //   ③ 字母/顺序兜底（接口只给 correctAnswer="A" 时，按可见顺序 + 选项自带字母定位）。
     function lqCorrectIndexes(block, q) {
         var opts = lqOptions(block);
         var picked = [];
         var i, j, k;
+
+        if (opts.length === 0) return picked;
 
         if (q.ids && q.ids.length) {
             for (i = 0; i < opts.length; i++) {
@@ -3238,25 +3517,58 @@
 
         if (picked.length === 0 && q.labels && q.labels.length) {
             for (k = 0; k < q.labels.length; k++) {
-                var target = lqKey(q.labels[k]);
+                var target = lqOptKey(q.labels[k]);
                 if (!target) continue;
                 var best = -1, bestScore = 0;
                 for (i = 0; i < opts.length; i++) {
                     if (picked.indexOf(i) !== -1) continue;
-                    var t = lqKey(opts[i].text);
+                    var t = lqOptKey(opts[i].text);
                     if (!t) continue;
                     var score = 0;
                     if (t === target) score = 1000 + t.length;
                     else if (t.indexOf(target) !== -1) score = 500 + target.length;
                     else if (target.indexOf(t) !== -1 && t.length >= 2) score = 300 + t.length;
+                    // 长文案被截断（页面上「…」）时用覆盖率兜底
+                    else if (t.length >= 8 && target.length >= 8) {
+                        var ratio = lqCoverage(t, target);
+                        if (ratio >= 0.8) score = 100 + Math.round(ratio * 100);
+                    }
                     if (score > bestScore) { bestScore = score; best = i; }
                 }
                 if (best !== -1) picked.push(best);
             }
         }
 
+        if (picked.length === 0 && q.letters && q.letters.length) {
+            for (k = 0; k < q.letters.length; k++) {
+                var want = String(q.letters[k]).toUpperCase();
+                var byLetter = -1;
+                for (i = 0; i < opts.length; i++) {
+                    if (picked.indexOf(i) !== -1) continue;
+                    if (lqOptionLeadLetter(opts[i].text) === want) { byLetter = i; break; }
+                }
+                var orderIdx = want.charCodeAt(0) - 65;
+                var byOrder = (orderIdx >= 0 && orderIdx < opts.length) ? orderIdx : -1;
+                // 选项自带字母与顺序对不上时以顺序为准（平台偶尔会把选项重排）
+                var hit = byOrder !== -1 ? byOrder : byLetter;
+                if (hit !== -1 && picked.indexOf(hit) === -1) picked.push(hit);
+            }
+        }
+
         picked.sort(function (a, b) { return a - b; });
         return picked;
+    }
+
+    // 短串的 5 字滑窗在长串里的覆盖率，用于截断文案的比对
+    function lqCoverage(shorter, longer) {
+        if (!shorter || !longer) return 0;
+        if (shorter.length > longer.length) { var tmp = shorter; shorter = longer; longer = tmp; }
+        var hit = 0, total = 0;
+        for (var s = 0; s + 5 <= shorter.length; s += 5) {
+            total++;
+            if (longer.indexOf(shorter.substr(s, 5)) !== -1) hit++;
+        }
+        return total ? hit / total : 0;
     }
 
     async function lqApplyAnswer(block, q) {
@@ -3284,7 +3596,16 @@
         }
 
         var idxs = lqCorrectIndexes(block, q);
-        if (idxs.length === 0) return { ok: false, reason: '未匹配到选项' };
+        if (idxs.length === 0) {
+            // 区分「答案对不上选项」和「根本没找到选项元素」——两者修法完全不同
+            var probe = lqOptions(block);
+            return {
+                ok: false,
+                reason: probe.length === 0
+                    ? '没找到选项元素（不是 input/label 结构）'
+                    : '未匹配到选项（答案＝' + lqDescribeAnswer(q) + '；页面选项 ' + probe.length + ' 个）',
+            };
+        }
 
         for (i = 0; i < idxs.length; i++) {
             var opts = lqOptions(block);   // 每次重新查：点一下平台就会重渲染
@@ -3392,6 +3713,42 @@
         }
     }
 
+    // 答案的可读摘要（日志用）：type / ids / letters / labels 都在一行里
+    function lqDescribeAnswer(q) {
+        if (!q) return '（空）';
+        var parts = ['type=' + (q.type === '' || q.type === undefined ? '?' : q.type)];
+        if (q.ids && q.ids.length) parts.push('ids[' + q.ids.join(',') + ']');
+        if (q.letters && q.letters.length) parts.push('letters[' + q.letters.join(',') + ']');
+        if (q.labels && q.labels.length) {
+            parts.push('labels[' + q.labels.map(function (s) { return cleanText(s).slice(0, 18); }).join(' | ') + ']');
+        }
+        if (q.blanks && q.blanks.length) parts.push('blanks[' + q.blanks.join(' | ').slice(0, 60) + ']');
+        return parts.join(' ');
+    }
+
+    // 匹配失败时的对照表：页面这一题长什么样、答案里那几题长什么样。
+    // 只在「没填满」时打一条，不刷屏；拿日志就能判断是题干对不上还是选项对不上。
+    function lqDumpMatch(questions, blocks) {
+        try {
+            var lines = [];
+            var maxB = Math.min(blocks.length, 12);
+            for (var i = 0; i < maxB; i++) {
+                var opts = lqOptions(blocks[i]);
+                var names = [];
+                for (var o = 0; o < opts.length; o++) names.push(cleanText(opts[o].text).slice(0, 14) || '(空)');
+                lines.push('页面' + (i + 1) + '「' + lqBlockText(blocks[i]).slice(0, 34) + '」选项×' + opts.length
+                    + '[' + names.join(' / ') + ']');
+            }
+            var maxQ = Math.min(questions.length, 12);
+            for (var j = 0; j < maxQ; j++) {
+                lines.push('答案' + (j + 1) + '「' + cleanText(questions[j].title).slice(0, 34) + '」'
+                    + lqDescribeAnswer(questions[j]));
+            }
+            logDebug('quiz', '对照诊断（页面 ' + blocks.length + ' 题 / 答案 ' + questions.length + ' 题）：'
+                + lines.join(' ⏎ '));
+        } catch (e) { /* 诊断失败不影响主流程 */ }
+    }
+
     async function completeLessonQuiz() {
         if (PAGE_CONFIG.examUrl.test(location.href)) {
             updateStatus('⚠️ 这是考试页，本功能不处理（考试通常只有一次机会，请手动作答）');
@@ -3433,19 +3790,20 @@
         }
 
         updateStatus('🔎 正在从课件接口读取本次随堂测验的答案...');
-        var res = await lqFetchQuestions(lqContext());
+        var res = await lqFetchQuestions(lqContext(), blocks);
         if (!res.ok) {
             updateStatus('❌ 读不到正确答案：' + res.error + '（一个选项都没点，也没提交）');
             return { ok: false, submitted: false, reason: 'no-answer' };
         }
-        logDebug('quiz', '接口返回 ' + res.questions.length + ' 道题，页面题块 ' + blocks.length + ' 个');
+        logDebug('quiz', '答案源「' + (res.source || 'api') + '」返回 ' + res.questions.length
+            + ' 道题，页面题块 ' + blocks.length + ' 个');
 
         var used = [], filled = 0, missing = [];
         for (var i = 0; i < blocks.length; i++) {
             if (taskState.cancelled) throw makeCancelError();
             var block = blocks[i];
             var text = lqBlockText(block);
-            var q = lqMatchQuestion(res.questions, text, used);
+            var q = lqMatchQuestion(res.questions, text, used, block);
             if (!q) {
                 missing.push(text.slice(0, 24) || ('第 ' + (i + 1) + ' 题'));
                 logDebug('quiz', '第 ' + (i + 1) + ' 题没匹配上答案：' + text.slice(0, 40));
@@ -3456,14 +3814,18 @@
             if (r.ok) filled++;
             else {
                 missing.push(text.slice(0, 24) || ('第 ' + (i + 1) + ' 题'));
-                logDebug('quiz', '第 ' + (i + 1) + ' 题作答不完整：' + r.reason);
+                logDebug('quiz', '第 ' + (i + 1) + ' 题作答不完整：' + r.reason
+                    + '（答案=' + lqDescribeAnswer(q) + '）');
             }
             updateStatus('📝 作答中 ' + (i + 1) + '/' + blocks.length + ' 题（已填 ' + filled + '）...');
             await sleep(250);
         }
 
+        // 没全填上就吐一份「页面题块 vs 答案」的对照，方便回传排查
+        if (filled < blocks.length) lqDumpMatch(res.questions, blocks);
+
         if (filled === 0) {
-            updateStatus('❌ 一题都没能作答（答案和页面题目对不上），已停止，未提交');
+            updateStatus('❌ 一题都没能作答（答案和页面题目对不上），已停止，未提交；日志里有对照明细');
             return { ok: false, submitted: false, reason: 'no-answer-all' };
         }
         // 少答一题就提交等于交白卷。宁可留几道让人补，也不替他赌。
@@ -5634,6 +5996,48 @@
             }
             if (shown > 0) { lines.push('（' + k2 + ' 可见候选 ' + shown + ' 条）'); lines.push(''); }
         }
+
+        // 【随堂测验题块实测】——「选择题匹配不上」先看这一段：
+        // 题块认出来几个、每题的题干和选项文案长什么样，再对照下面的答案源。
+        lines.push('【随堂测验题块实测】');
+        var dbgScope = lqScope();
+        var dbgBlocks = lqBlocks(dbgScope);
+        var dbgScopeCls = dbgScope
+            ? (typeof dbgScope.className === 'string' ? dbgScope.className : (dbgScope.getAttribute('class') || ''))
+            : '';
+        lines.push('题块容器：' + (dbgScope ? '命中 class="' + dbgScopeCls.slice(0, 80) + '"' : '未命中（整页兜底）')
+            + '，题块 ' + dbgBlocks.length + ' 个');
+        for (var bi = 0; bi < dbgBlocks.length && bi < 10; bi++) {
+            var bopts = lqOptions(dbgBlocks[bi]);
+            var bnames = [];
+            for (var bo = 0; bo < bopts.length; bo++) {
+                bnames.push(cleanText(bopts[bo].text).slice(0, 16) || '(空)');
+            }
+            var bcls = typeof dbgBlocks[bi].className === 'string'
+                ? dbgBlocks[bi].className : (dbgBlocks[bi].getAttribute('class') || '');
+            lines.push('  题' + (bi + 1) + ' <' + String(dbgBlocks[bi].tagName || '').toLowerCase()
+                + ' class="' + bcls.slice(0, 80) + '">');
+            lines.push('     题干：' + lqBlockText(dbgBlocks[bi]).slice(0, 90));
+            lines.push('     选项×' + bopts.length + '：' + bnames.join(' / '));
+        }
+        if (dbgBlocks.length > 0) {
+            // 附一段题块原始 HTML：类名千变万化，看文案容易误判，看结构最准
+            var dbgHtml = String(dbgBlocks[0].outerHTML || '').replace(/\s+/g, ' ');
+            lines.push('  题1 原始结构（截 900 字）：' + dbgHtml.slice(0, 900));
+        }
+        if (isSpocCourse()) {
+            lines.push('  dwr paper：' + (SPOC_DWR.paper && SPOC_DWR.paper.objectiveQList
+                ? '已捕获 ' + SPOC_DWR.paper.objectiveQList.length + ' 题'
+                : '未捕获（切一次内容再点诊断）'));
+            if (SPOC_DWR.paper) {
+                var dbgQs = spocParsePaper(SPOC_DWR.paper);
+                for (var qi = 0; qi < dbgQs.length && qi < 8; qi++) {
+                    lines.push('  答案' + (qi + 1) + '「' + cleanText(dbgQs[qi].title).slice(0, 40) + '」'
+                        + lqDescribeAnswer(dbgQs[qi]));
+                }
+            }
+        }
+        lines.push('');
 
         // 目录/侧栏结构诊断：自动学习的“下一内容”依赖侧栏链接与平台“下一个”按钮
         lines.push('【目录/侧栏】');
