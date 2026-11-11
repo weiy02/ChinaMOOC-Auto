@@ -43,7 +43,7 @@
     <div class="wrap hero-inner">
       <div class="hero-copy">
         <div class="pill-row">
-          <span class="pill pill-live">当前版本 <b data-version>1.14.3</b></span>
+          <span class="pill pill-live">当前版本 <b data-version>1.14.5</b></span>
           <span class="pill">MOOC + SPOC</span>
           <span class="pill">MIT</span>
         </div>
@@ -150,12 +150,12 @@
         <article class="card">
           <div class="card-icon">测</div>
           <h3>随堂测验一键作答</h3>
-          <p>从课件接口（MOOC）或 dwr 响应（SPOC）取正确答案，逐题比对填涂后提交。题目对不上时只填不交，留状态说明让你手动补完，绝不交白卷。</p>
+          <p>从课件接口（MOOC）或 dwr 响应（SPOC）取正确答案，逐题比对填涂后提交。选项按「平台 ID → 文案 → 字母顺序」三级定位，SPOC 两份答案源择优采用。题目对不上时只填不交，留状态说明让你手动补完，绝不交白卷。</p>
         </article>
         <article class="card">
           <div class="card-icon">学</div>
           <h3>整章自动学习</h3>
-          <p>视频播完 → 文档翻页 → 讨论回复 → 随堂测验作答，跨小节、跨章节自动推进。刷新后自动续跑，视频弹题默认被拦截，不打断播放。</p>
+          <p>视频播完 → 文档翻页 → 讨论回复 → 随堂测验作答，跨小节、跨章节自动推进。刷新后自动续跑，视频弹题默认被拦截。内容没渲染出来会自动重载，不把「白页」当已完成跳过。</p>
         </article>
       </div>
 
@@ -238,12 +238,17 @@
         </details>
         <details>
           <summary>自动学习跑到测验那节，好像被跳过了？</summary>
-          <p>这是已知问题，正在排查（1.14.1 修过一轮，仍有复现）。同一页面用手动按钮点「随堂测验：一键完成并提交」是正常的。</p>
-          <p>临时规避：自动学习跳到测验页后停下来，手动点一次即可。顺手把日志里 <code>[type]</code> / <code>[load]</code> / <code>[quiz]</code> 三类行导出来提 Issue，能显著加快修复。</p>
+          <p>1.14.5 起已针对这种情况修过：以前标签明明写着「测验」、页面里却没题块，脚本干等 23 秒后当成单元测验跳过。现在会先自救——结果态就点「重做」回去作答，有「开始答题」入口就点进去，都没有就重按当前标签、再不行切到相邻内容再切回来，逼平台重新请求。</p>
+          <p>仍然被跳过时，状态栏与日志会给出<b>现场摘要</b>（标签类型 / 可见单选框数 / 入口按钮 / 是否结果态）。把 <code>[quiz]</code> 那几行导出来提 Issue，能直接定位是哪一类。</p>
         </details>
         <details>
           <summary>SPOC 提示「没拿到 dwr 试题数据」怎么办？</summary>
           <p>SPOC 的题目答案在 dwr 响应里，脚本注入时首屏那条请求已经发完了，所以会挂 hook 等下一次。提示出现时，手动切到别的「测试」标签再切回来，触发一次新请求就行。</p>
+        </details>
+        <details>
+          <summary>SPOC 的选择题总是「匹配不上」，选项一个都没勾？</summary>
+          <p>1.14.4 修过一批：dwr 里的 <code>answer</code> 有时是 <code>"true"</code> 字符串或 <code>1</code>，字段名也可能叫 <code>optionList</code> / <code>isAnswer</code>；选项文案还常有「A、」这种前缀差异。现在会做布尔兼容、剥前缀比对，答案只给字母时按选项顺序定位。</p>
+          <p>如果还复现，「页面 DOM 诊断」里新增了<b>【随堂测验题块实测】</b>——每题题干、选项文案、dwr 题量与解析出的答案都在里面，附一段原始 HTML。把这段发出来就能精准适配。</p>
         </details>
         <details>
           <summary>评论和讨论的正文是哪来的？会不会乱编？</summary>
@@ -261,6 +266,20 @@
     <div class="wrap">
       <h2 class="sec-title">近期更新</h2>
       <ul class="timeline">
+        <li>
+          <span class="ver">1.14.5</span>
+          <div>
+            <h3>测验页不再被当成单元测验跳过</h3>
+            <p>标签写着「测验」、页面却还没渲染出题块时，旧逻辑只会干等 23 秒然后跳过。现在会自救：结果态点「重做」回作答态、有「开始答题」入口就点进去、重按当前标签、切到相邻内容再切回。课件确实坏了则立即放弃，不空等。题块检测也不再只认类名；视频 / 文档白页会先催一次重载。</p>
+          </div>
+        </li>
+        <li>
+          <span class="ver">1.14.4</span>
+          <div>
+            <h3>SPOC 选择题匹配加固</h3>
+            <p>dwr 解析不再写死 <code>answer === true</code>，兼容字符串与数字真值、多种字段名；选项定位兼容 <code>opacity:0</code> 的假单选框，比对前剥掉「A、」这类前缀；题块按 <code>name</code> 分组切分；SPOC 两份答案源按「与页面题块对得上几题」择优。DOM 诊断新增【随堂测验题块实测】。</p>
+          </div>
+        </li>
         <li>
           <span class="ver">1.14.3</span>
           <div>
@@ -280,20 +299,6 @@
           <div>
             <h3>类型判定改为看内容标签图标</h3>
             <p>修复切换标签后残留的文档查看器让测验被误判成文档、进而被跳过的问题。</p>
-          </div>
-        </li>
-        <li>
-          <span class="ver">1.14.0</span>
-          <div>
-            <h3>测验识别统一判据</h3>
-            <p>自动学习与手动按钮共用同一套判据，判定前给 8 秒等待窗口；跳转后强制停留 10 秒，避免读到上一份 DOM 就秒跳。</p>
-          </div>
-        </li>
-        <li>
-          <span class="ver">1.13.3</span>
-          <div>
-            <h3>日志可展开</h3>
-            <p>弹出大窗展示全部日志（最多 500 条），带行号、可复制，向上翻不会被拽回底部。</p>
           </div>
         </li>
       </ul>
