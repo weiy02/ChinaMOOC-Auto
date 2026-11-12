@@ -1927,6 +1927,8 @@
             if (el.id === 'mar-log-copy' || el.id === 'mar-log-clear' || el.id === 'mar-log-expand') continue;
             // 问题反馈是 <a>，本来就不该被任务状态锁住（出问题时正是要反馈）
             if (el.id === 'mar-feedback') continue;
+            // 官网链接同理：什么时候都能点，和任务状态无关
+            if (el.classList.contains('mar-site')) continue;
             el.disabled = isRunning;
         }
         var stop = document.getElementById('mar-stop');
@@ -1970,6 +1972,15 @@
             '  cursor: pointer; transition: background 0.15s ease, color 0.15s ease;',
             '}',
             '#mar-help:hover, #mar-minimize:hover { background: rgba(255, 255, 255, 0.08); color: #ededed; }',
+            // 标题栏的「官网」：和 ?/− 一样高，但它是文字链接，不能套 22px 定宽
+            '#mar-head-actions .mar-head-link {',
+            '  height: 22px; padding: 0 5px;',
+            '  display: flex; align-items: center;',
+            '  border-radius: 6px; text-decoration: none;',
+            '  color: #8a8a90; font-size: 11px; line-height: 1; letter-spacing: 0.2px;',
+            '  transition: background 0.15s ease, color 0.15s ease;',
+            '}',
+            '#mar-head-actions .mar-head-link:hover { background: rgba(255, 255, 255, 0.08); color: #ededed; }',
             '#mar-tabs { display: flex; gap: 2px; padding: 8px 8px 0; }',
             '.mar-tab {',
             '  flex: 1; padding: 6px 2px; border: 0; border-radius: 6px;',
@@ -2247,11 +2258,12 @@
         '<h4>自动学习</h4>',
         '<ul>',
         '<li>从当前内容开始，学完一个自动进下一个，直到全部学完；页面刷新后自动续跑。</li>',
-        '<li><b>视频</b>：从头播放（可调倍速），播完进下一个内容——不「视频接视频」。</li>',
+        '<li><b>视频</b>：从头播放（可调倍速），播完进下一个内容；落点是<b>此前已看完</b>的视频时不重播，直接前进。</li>',
         '<li><b>文档 / 课件</b>：每页约 1 秒自动翻页。<b>富文本</b>：停留 10 秒后跳转。</li>',
         '<li><b>讨论</b>：自动回复。</li>',
         '<li><b>随堂测验</b>：自动作答并提交，提交后停留 10 秒再进下一个内容。</li>',
         '<li><b>每次跳转后先硬等 10 秒</b>再处理新内容——刚切过去时页面还是上一份内容，立刻判定会认错类型甚至秒跳下一节。等待期间点【下一节】可提前跳过。</li>',
+        '<li>这 10 秒里脚本会<b>盯住自己该在哪个内容上</b>：平台的「自动播放下一集」若把页面带走了（已看完的视频约 5 秒后就会跳到下一个视频），脚本立刻切回原内容并重新计时，不会顺着平台跳过中间的文档 / 测验 / 讨论。</li>',
         '<li><b>单元测验 / 作业 / 考试</b>：不进入。</li>',
         '<li><b>视频中弹题</b>：默认<b>直接拦截</b>——不让视频暂停、浮层一冒出来就收掉，视频一路播到底；实在拦不住（浮层包着播放器）时才自动作答并提交，答案优先取课件接口里的正确答案，取不到才退化为顺位作答。<b>设置</b>页签可关掉拦截退回纯自动作答。</li>',
         '<li>右下角<b>【下一节】</b>随时可点，立即跳到下一个内容。</li>',
@@ -2265,6 +2277,7 @@
         '<ul>',
         '<li>讨论内容来源、视频倍速（0.5x ~ 3x）、<b>视频弹题拦截</b>（关掉则退回自动作答）、解除页面复制限制、清除讨论回复记录。</li>',
         '<li><b>问题反馈</b>：点一下直接打开 GitHub 的新建 Issue 页面。反馈时请附上「日志」里相关的几行，以及「页面 DOM 诊断」导出的结构，定位会快很多。</li>',
+        '<li><b>官网</b>：打开功能说明、图文教程与更新记录的站点（标题栏右上角也有一个）。</li>',
         '</ul>',
         '<h4>课程类型</h4>',
         '<ul>',
@@ -2315,6 +2328,7 @@
             '<div id="mar-header">',
             '  <span id="mar-title"><span class="mar-dot"></span>MOOC 助手</span>',
             '  <span id="mar-head-actions">',
+            '    <a class="mar-head-link mar-site" href="https://weiy02.github.io/ChinaMOOC-Auto/" target="_blank" rel="noopener noreferrer" title="打开官网：功能说明 · 教程 · 更新记录">官网</a>',
             '    <button id="mar-help" title="使用说明">?</button>',
             '    <button id="mar-minimize" title="最小化">−</button>',
             '  </span>',
@@ -2370,6 +2384,7 @@
             '      <button id="mar-copy-unlock" class="mar-btn mar-toggle">解除复制限制：关</button>',
             '      <button id="mar-discuss-clear" class="mar-btn">清除回复记录</button>',
             '      <a id="mar-feedback" class="mar-btn" href="https://github.com/weiy02/ChinaMOOC-Auto/issues/new" target="_blank" rel="noopener noreferrer" title="在 GitHub 上提交问题">问题反馈</a>',
+            '      <a id="mar-site" class="mar-btn mar-site" href="https://weiy02.github.io/ChinaMOOC-Auto/" target="_blank" rel="noopener noreferrer" title="打开官网：功能说明 · 教程 · 更新记录">官网 / 使用教程</a>',
             '    </div>',
             '  </div>',
             '  <div id="mar-foot">',
