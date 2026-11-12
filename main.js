@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      1.14.5
-// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；连续视频自动跳过；视频中弹出的题目默认直接拦截：不放行暂停、浮层一出现就收掉，视频一路播到底，拦不住时才自动作答并提交、答案优先取课件接口）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
+// @version      2.1
+// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；已看完的视频不重播；视频中弹出的题目默认直接拦截：不放行暂停、浮层一出现就收掉，视频一路播到底，拦不住时才自动作答并提交、答案优先取课件接口）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=icourse163.org
@@ -69,6 +69,14 @@
         // 页面刚切过去时 DOM 往往还是上一份内容，立即判定会误判类型，
         // 甚至把“还没开始的内容”当成已完成而马上跳到下一节。
         LEARN_JUMP_SETTLE_MS: 10000,
+        // 落点是「此前已经看完」的视频时，不必等满 10 秒。
+        // 平台对已完成视频常常约 5 秒就自动跳到下一集（而且是下一个视频，
+        // 中间的文档/测验/讨论直接被跨过去）。这里只留一个确认 DOM 的短窗口，
+        // 抢在平台自动跳转之前由脚本自己按内容条顺序前进。
+        LEARN_JUMP_SETTLE_FAST_MS: 1500,
+        // 连续视频是否跳过（1.14.x 的老行为：视频→视频 直接跳过第二个）。
+        // 默认 false：逐个处理才不会漏学；想回到老行为改成 true。
+        LEARN_SKIP_CONSECUTIVE_VIDEO: false,
 
         // ---- 视频播放中的弹题 ----
         // 首选方案：不让弹题打断播放。两层拦截——
@@ -4936,6 +4944,8 @@
                 if (video.__marEndedFlag || video.ended || (video.duration > 0 && video.currentTime >= video.duration - CONFIG.LEARN_VIDEO_END_MARGIN)) {
                     logDebug('video', '🎬 播放完毕（currentTime=' + (video.currentTime || 0).toFixed(1) + '/duration=' + (video.duration || 0).toFixed(1) + '）');
                     updateStatus('🎬 视频播放完毕');
+                    // 记下这个节点：后面的内容若还没换掉 DOM，不能用它判断“已看完”
+                    learnLastVideoEl = video;
                     return true;
                 }
 
@@ -5305,31 +5315,175 @@
     // 记在 localStorage 里是必须的：MOOC 新版是整页刷新路由，内存变量会丢。
     var lastJumpAt = 0;
 
+    // 登记「跳过去之后我应该站在哪个内容上」。
+    // 这一步是为了对付平台的“自动播放下一集”：已看完的视频进去约 5 秒后，
+    // 平台会自己跳到下一集视频，把夹在中间的文档/测验/讨论整段跨过去。
+    // 有了预期，等待期间就能发现被顶掉并切回来。
+    function learnSetExpect(key, kind) {
+        var st = learnLoadState();
+        if (!st) return;
+        st.expectKey = key || '';
+        st.expectKind = kind || '';
+        learnSaveState(st);
+    }
+
     function learnMarkJump() {
         lastJumpAt = Date.now();
         var st = learnLoadState();
         if (st) { st.jumpAt = lastJumpAt; learnSaveState(st); }
+        var expect = (st && st.expectKey) ? '，预期内容=「' + String(st.expectKey).slice(0, 20) + '」' : '';
         logDebug('learn', '已记录跳转时刻，接下来强制等待 '
-            + Math.round(CONFIG.LEARN_JUMP_SETTLE_MS / 1000) + ' 秒再处理新内容');
+            + Math.round(CONFIG.LEARN_JUMP_SETTLE_MS / 1000) + ' 秒再处理新内容' + expect);
+    }
+
+    // 两个标签键是否指同一个内容（容忍平台给 aria-label 追加状态词/时长）
+    function sameTabKey(a, b) {
+        if (!a || !b) return false;
+        if (a === b) return true;
+        if (a.indexOf(b) !== -1 || b.indexOf(a) !== -1) return true;
+        var ca = codeKeyOf(a), cb = codeKeyOf(b);
+        return !!(ca && cb && ca === cb);
+    }
+
+    // 视频是否已经播完（用来判断“落点是不是一个此前已看完的视频”）
+    function videoWatchedOut(v) {
+        if (!v) return false;
+        if (v.__marEndedFlag || v.ended) return true;
+        var d = v.duration;
+        if (d && d > 0 && isFinite(d) && v.currentTime >= d - CONFIG.LEARN_VIDEO_END_MARGIN) return true;
+        return false;
+    }
+
+    // 内容标签上是否带“已学完”标记（平台会用图标/文字标注）
+    function tabLooksDone(tab) {
+        if (!tab) return false;
+        if (/已学完|已完成|已看完/.test(tabLabel(tab))) return true;
+        try {
+            if (tab.querySelector('[aria-label*="已学完"], [aria-label*="完成"], [class*="complete"], [class*="finished"]')) return true;
+        } catch (e) {}
+        return false;
+    }
+
+    // 关掉平台自带的「自动播放下一集」。
+    // 老代码只认 input.j-autoNext，新版 UI 换过几轮 class，这里多认几种；
+    // 关不掉也照样往下走（等待期间还有“被带走就切回来”的兜底）。
+    function turnOffPlatformAutoNext() {
+        var inputs = [], i;
+        var sels = ['input.j-autoNext', 'input[class*="autoNext"]', 'input[class*="auto-next"]',
+            '[class*="autoNext"] input', '[class*="auto-next"] input'];
+        for (i = 0; i < sels.length; i++) {
+            var els;
+            try { els = document.querySelectorAll(sels[i]); } catch (e) { continue; }
+            for (var j = 0; j < els.length; j++) if (inputs.indexOf(els[j]) === -1) inputs.push(els[j]);
+        }
+        // 文案兜底：label / 开关容器里带「自动播放」的
+        var boxes = document.querySelectorAll('label, [class*="switch"], [class*="toggle"]');
+        for (i = 0; i < boxes.length; i++) {
+            var t = cleanText(boxes[i].textContent || '');
+            if (!t || t.length > 30 || !/自动播放/.test(t)) continue;
+            var inp = boxes[i].querySelector('input[type="checkbox"]');
+            if (inp && inputs.indexOf(inp) === -1) inputs.push(inp);
+        }
+        var off = 0;
+        for (i = 0; i < inputs.length; i++) {
+            if (inputs[i].checked) { realClick(inputs[i]); off++; }
+        }
+        if (off) logDebug('learn', '已关闭平台「自动播放下一集」开关 ' + off + ' 个');
+        return off;
     }
 
     async function waitJumpSettle() {
         var st = learnLoadState();
         var at = Math.max(lastJumpAt, (st && st.jumpAt) || 0);
         if (!at) return;   // 首次开始学习（没有跳转过），不等
-        var left = CONFIG.LEARN_JUMP_SETTLE_MS - (Date.now() - at);
+        var expectKey = (st && st.expectKey) || '';
+        var expectKind = (st && st.expectKind) || '';
+        var total = CONFIG.LEARN_JUMP_SETTLE_MS;
+        var left = total - (Date.now() - at);
         if (left <= 0) {
-            logDebug('learn', '距上次跳转已超过 ' + Math.round(CONFIG.LEARN_JUMP_SETTLE_MS / 1000) + ' 秒，无需再等');
+            logDebug('learn', '距上次跳转已超过 ' + Math.round(total / 1000) + ' 秒，无需再等');
             return;
         }
-        var sec = Math.ceil(left / 1000);
-        logDebug('learn', '跳转后强制停留：还需等 ' + sec + ' 秒');
-        updateStatus('⏳ 刚切换到新内容，强制等待 ' + sec + ' 秒后再开始处理（可点右下角【下一节】提前跳过）...');
-        // 默认硬等满 10 秒；只有「停止」和用户主动点的【下一节】能打断。
-        // 【下一节】的语义本来就是「跳过这个内容」，等在这里时按它就该放行。
-        await sleepWhile(left, function () { return manualWaitFlag; });
-        if (manualWaitFlag) logDebug('learn', '强制停留期间用户点了【下一节】，提前结束等待');
-        else logDebug('learn', '强制停留结束，开始处理当前内容');
+        // 先把平台的自动下一集关掉，再开始等 —— 否则等的这段时间正好是它抢跑的时间
+        turnOffPlatformAutoNext();
+
+        logDebug('learn', '跳转后强制停留：还需等 ' + Math.ceil(left / 1000) + ' 秒'
+            + (expectKey ? '（预期内容=「' + String(expectKey).slice(0, 20) + '」）' : ''));
+        var t0 = Date.now();
+        var hardEnd = t0 + total + 30000;   // 反复切回也别无限等
+        var recoverTries = 0;
+        var warnedMissing = false;
+        var fastApplied = false;
+        var lastSec = -1;
+
+        while (true) {
+            if (taskState.cancelled) return;
+            if (manualWaitFlag) { logDebug('learn', '强制停留期间用户点了【下一节】，提前结束等待'); return; }
+            // 默认硬等满 10 秒；只有「停止」、用户主动点的【下一节】、以及下面两种
+            // 需要抢跑的例外能提前结束。
+            left = total - (Date.now() - t0);
+            if (left <= 0 || Date.now() > hardEnd) break;
+
+            var cur = currentContentTab();
+            var curKey = cur ? tabKey(cur) : '';
+
+            // ① 等待期间内容被平台自动切走 → 立刻切回预期内容
+            if (expectKey && curKey && !sameTabKey(curKey, expectKey)) {
+                var back = findTabByKey(expectKey);
+                if (back && recoverTries < 2) {
+                    recoverTries++;
+                    logDebug('learn', '⚠️ 等待期间内容被平台切走：「' + curKey.slice(0, 20)
+                        + '」≠ 预期「' + expectKey.slice(0, 20) + '」，尝试切回（第 ' + recoverTries + ' 次）');
+                    realClick(back);
+                    if (await waitForTabActive(back, 3000)) {
+                        updateStatus('↩️ 平台自动跳到了下一个视频，已切回原内容继续处理...');
+                        t0 = Date.now();
+                        lastSec = -1;
+                        continue;
+                    }
+                    logDebug('learn', '⚠️ 切回没生效，继续等待后再处理');
+                } else if (!back) {
+                    // 当前内容条里已经找不到预期内容：多半连小节都被平台带走了。
+                    // 这时切不回去，也不急着提前结束（可能是 SPOC 或结构识别差异），
+                    // 只记一条警告，等剩余时间走完后按眼前内容处理。
+                    if (!warnedMissing) {
+                        warnedMissing = true;
+                        logDebug('learn', '⚠️ 已找不到预期内容「' + expectKey.slice(0, 20)
+                            + '」（可能连小节一起被平台跳走），稍后按当前内容继续');
+                    }
+                }
+            }
+
+            // ② 落点是「此前已看完的视频」→ 不等满，抢在平台 5 秒自动跳转之前接管。
+            //    这正是“中间的文档/测验/讨论被跳过”的根因：硬等 10 秒，
+            //    平台早就跳到下一个视频去了。
+            //    只留 LEARN_JUMP_SETTLE_FAST_MS 的短窗口（给 DOM 一点确认时间），
+            //    随后由脚本自己按内容条顺序前进。
+            var kind = expectKind || contentKindFromTab(cur);
+            if (kind === 'video') {
+                var v = findVideo();
+                // v !== learnLastVideoEl：排除上一段视频残留的节点（它也停在结尾）
+                if ((v && v !== learnLastVideoEl && videoWatchedOut(v)) || tabLooksDone(cur)) {
+                    if (!fastApplied) {
+                        fastApplied = true;
+                        total = CONFIG.LEARN_JUMP_SETTLE_FAST_MS;
+                        t0 = Date.now();
+                        lastSec = -1;
+                        logDebug('learn', '落点是已看完的视频（' + (v ? 'currentTime≈duration' : '标签带已学完标记')
+                            + '），把强制等待压缩到 ' + total + 'ms，抢在平台自动跳转前接管');
+                        updateStatus('⏭ 该视频此前已看完：不再空等，确认后直接进入下一个内容...');
+                    }
+                }
+            }
+
+            var sec = Math.ceil(left / 1000);
+            if (sec !== lastSec) {
+                lastSec = sec;
+                updateStatus('⏳ 刚切换到新内容，强制等待 ' + sec + ' 秒后再开始处理（可点右下角【下一节】提前跳过）...');
+            }
+            await sleep(300);
+        }
+        logDebug('learn', '强制停留结束，开始处理当前内容');
     }
 
     // ===================== 新版 DOM 导航核心（tablist + 章节/小节下拉） =====================
@@ -5355,21 +5509,123 @@
         });
     }
 
-    // 等待某个内容标签成为激活项（aria-selected=true）
-    async function waitForTabActive(tab) {
+    // 等待某个内容标签成为激活项。
+    // 注意：不能只看 aria-selected —— 新版内容条是 tailwind 版的普通 button，
+    // 激活态由颜色 class 表示（text-[#00cc7e] / bg-primary-50，参考 Auto_Mooc 的做法），
+    // 死等 aria-selected 会在这种页面上空转满 5 秒然后误判“点击没生效”。
+    async function waitForTabActive(tab, timeoutMs) {
+        var limit = timeoutMs || CONFIG.LEARN_NAV_WAIT;
         var t0 = Date.now();
-        while (Date.now() - t0 < CONFIG.LEARN_NAV_WAIT) {
+        while (Date.now() - t0 < limit) {
             if (taskState.cancelled) return false;
-            if (tab && tab.getAttribute('aria-selected') === 'true') return true;
+            if (tabIsActive(tab)) return true;
             await sleep(200);
         }
-        return !!(tab && tab.getAttribute('aria-selected') === 'true');
+        return tabIsActive(tab);
     }
 
-    // 当前激活的内容标签（[role="tab"][aria-selected="true"] 中可见的那个）
+    // 标签文本（优先 aria-label，其次可见文本）
+    function tabLabel(tab) {
+        if (!tab) return '';
+        var l = (tab.getAttribute && (tab.getAttribute('aria-label') || tab.getAttribute('title'))) || '';
+        var t = cleanText(tab.textContent || '');
+        return (l || t || '').slice(0, 40);
+    }
+
+    // 标签的归一化唯一键：用于「跳转后确认我还在预期的那一项上」。
+    function tabKey(tab) {
+        return normMatch(tabLabel(tab));
+    }
+
+    // 标签是否处于激活态：aria-selected 优先，其次认新版 UI 的激活 class。
+    function tabIsActive(tab) {
+        if (!tab) return false;
+        if (tab.getAttribute && tab.getAttribute('aria-selected') === 'true') return true;
+        var cls = typeof tab.className === 'string'
+            ? tab.className
+            : (tab.getAttribute ? (tab.getAttribute('class') || '') : '');
+        if (!cls) return false;
+        return /text-\[#00cc7e\]|bg-primary-50|(^|\s)current(\s|$)|(^|\s)selected(\s|$)|(^|\s)active(\s|$)|is-active/i.test(cls);
+    }
+
+    // 内容条容器候选：新版是 .learn-unit-tabs-scroll（参考仓库用的就是它），
+    // 老版是 [role="tablist"]。两者都收，避免平台改一次结构就整条导航失效。
+    function contentStrips() {
+        var out = [];
+        var sels = ['.learn-unit-tabs-scroll', '[role="tablist"]'];
+        for (var s = 0; s < sels.length; s++) {
+            var els;
+            try { els = document.querySelectorAll(sels[s]); } catch (e) { continue; }
+            for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                if (!isVisible(el)) continue;
+                // 去掉被已收录容器包住的重复项
+                var dup = false;
+                for (var j = 0; j < out.length; j++) {
+                    if (out[j] === el || out[j].contains(el)) { dup = true; break; }
+                }
+                if (!dup) out.push(el);
+            }
+        }
+        return out;
+    }
+
+    // 取某个内容条里的内容标签（按 DOM 顺序）。
+    // 关键修复：不再假设「tab 的兄弟节点就是 tab」。新版 UI 把每个 tab 包在
+    // <li>/<div> 里，用 nextElementSibling 走一步就 null → 整节剩余内容被当成
+    // 「本节已结束」而直接跳章，文档/测验/讨论就这样被漏掉。
+    function tabsOfStrip(strip) {
+        if (!strip) return [];
+        // 无条件同时认 [role="tab"] 和 button：
+        //   · 老版内容条是 button[role="tab"]
+        //   · 新版 .learn-unit-tabs-scroll 里是普通 button（激活态靠颜色 class）
+        // 只按 role 取会在新版页面上拿到 0 项，整条导航直接失效。
+        var nodes = strip.querySelectorAll('[role="tab"], button');
+        var out = [];
+        for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            if (!isVisible(el)) continue;
+            if (el.getAttribute && el.getAttribute('aria-expanded')) continue; // 下拉/展开按钮不是内容
+            var label = tabLabel(el);
+            if (!label) continue;
+            // 滚动箭头 / 下拉 / 更多 之类的操作按钮不是内容项，混进来会让索引错位
+            if (/更多|收起|展开|滚动|向左|向右|上一章|下一章|上一节|下一节|scroll|prev|next/i.test(label)) continue;
+            out.push(el);
+        }
+        return out;
+    }
+
+    // 当前「正在用」的内容条：优先含激活标签的那条，避免页面上另有 tablist
+    //（目录/资料/公告之类的页签）时把它的第一项当成内容项。
+    function currentStrip() {
+        var strips = contentStrips();
+        var i, j, ts;
+        for (i = 0; i < strips.length; i++) {
+            ts = tabsOfStrip(strips[i]);
+            for (j = 0; j < ts.length; j++) if (tabIsActive(ts[j])) return strips[i];
+        }
+        return strips.length === 1 ? strips[0] : null;
+    }
+
+    // 当前激活的内容标签
     function currentContentTab() {
+        var strips = contentStrips();
+        var i, j, ts;
+        for (i = 0; i < strips.length; i++) {
+            ts = tabsOfStrip(strips[i]);
+            for (j = 0; j < ts.length; j++) if (tabIsActive(ts[j])) return ts[j];
+        }
+        // 回退：老版页面用 [role="tab"][aria-selected="true"]
         var tabs = document.querySelectorAll('[role="tab"][aria-selected="true"]');
-        for (var i = 0; i < tabs.length; i++) if (isVisible(tabs[i])) return tabs[i];
+        for (i = 0; i < tabs.length; i++) if (isVisible(tabs[i])) return tabs[i];
+        return null;
+    }
+
+    // 按 key 在当前内容条里找标签（跳转后被平台带走时用来切回来）
+    function findTabByKey(key) {
+        if (!key) return null;
+        var tabs = contentTabs();
+        for (var i = 0; i < tabs.length; i++) if (tabKey(tabs[i]) === key) return tabs[i];
         return null;
     }
 
@@ -5397,13 +5653,17 @@
         return null;
     }
 
-    // 收集全部可见的内容标签
+    // 收集当前内容条里的全部内容标签（按 DOM 顺序）。
+    // 只取「正在用的那一条」，不再把页面上所有 tablist 混在一起 ——
+    // 混在一起时 firstTabInLesson 可能拿到别的页签里的第一项，一跳就跳到别处。
     function contentTabs() {
+        var strip = currentStrip();
+        if (strip) return tabsOfStrip(strip);
+        var strips = contentStrips();
         var out = [];
-        var lists = document.querySelectorAll('[role="tablist"]');
-        for (var l = 0; l < lists.length; l++) {
-            var ts = lists[l].querySelectorAll('[role="tab"]');
-            for (var i = 0; i < ts.length; i++) if (isVisible(ts[i])) out.push(ts[i]);
+        for (var s = 0; s < strips.length; s++) {
+            var ts = tabsOfStrip(strips[s]);
+            for (var i = 0; i < ts.length; i++) out.push(ts[i]);
         }
         return out;
     }
@@ -5589,23 +5849,54 @@
         return String(s === null || s === undefined ? '' : s).replace(/\s+/g, '');
     }
 
+    // 小节/章节的编号前缀（4.2.2、第四章），用于文案匹配失败时的兜底定位。
+    // 名字带空格的差异（「4.2.2 依靠人民…」vs「4.2.2依靠人民…」）虽然 normMatch
+    // 已经抹平，但平台偶尔会在 aria-label 里多塞状态词（「已完成」），编号没变——
+    // 这种情况只有编号能对上，不兜底就会误判「本节是最后一项」→ 直接跳章漏整节。
+    function codeKeyOf(text) {
+        var s = normMatch(text);
+        var m = s.match(/^(\d+(?:\.\d+)+)/);
+        if (m) return m[1];
+        var m2 = s.match(/^第[一二三四五六七八九十百\d]+[章节]/);
+        return m2 ? m2[0] : '';
+    }
+
+    // 上一次菜单匹配的结果，供调用方区分「当前项没找到」和「当前项是最后一项」：
+    // idx=-1 表示没匹配上（结构/文案变了），此时绝不能当成“本节结束”去跳章。
+    var lastMenuMatch = { idx: -1, total: 0, byCode: false };
+
     // 在菜单项里找「文本与 currentLabel 相似」的项，返回它的下一个；没有下一个返回 null。
-    // 文本相似 = 相等 / 互相包含（归一化空白后比较，精确匹配优先，包含关系兜底）。
+    // 文本相似 = 相等 / 互相包含（归一化空白后比较，精确匹配优先，包含关系兜底），
+    // 最后还有一级「编号相同」兜底。
     // 文本一律用 itemFullText 取（提升到可点父级），避免 span 碎片导致匹配失败。
     // 注意：分组标题（第一节/第二节）也参与匹配和取下一个 —— 有些课程里节标题本身可点
     // （点它进入该节），直接跳过会让用户觉得“第一节/第二节被跳过”。不可点时由
     // doSectionJump 的兜底逻辑改点该节第一个内容单元。
     function nextOfMenuItems(items, currentLabel) {
+        lastMenuMatch = { idx: -1, total: (items ? items.length : 0), byCode: false };
         if (!items || items.length === 0) return null;
         var target = normMatch(currentLabel);
-        var idx = -1;
-        for (var i = 0; i < items.length; i++) {
-            var full = itemFullText(items[i]);
-            var t = normMatch(full);
+        var idx = -1, i, t;
+        for (i = 0; i < items.length; i++) {
+            t = normMatch(itemFullText(items[i]));
             if (!t) continue;
             if (target && (t === target || t.indexOf(target) !== -1 || target.indexOf(t) !== -1)) { idx = i; break; }
         }
-        if (idx === -1) return null; // 没找到当前项，无法确定“下一个”
+        if (idx === -1) {
+            var code = codeKeyOf(currentLabel);
+            if (code) {
+                for (i = 0; i < items.length; i++) {
+                    if (codeKeyOf(itemFullText(items[i])) === code) { idx = i; lastMenuMatch.byCode = true; break; }
+                }
+                if (idx !== -1) logDebug('menu', '文案没匹配上，改按编号「' + code + '」定位当前项（idx=' + idx + '）');
+            }
+        }
+        lastMenuMatch.idx = idx;
+        lastMenuMatch.total = items.length;
+        if (idx === -1) {
+            logDebug('menu', '⚠️ 菜单里找不到当前项「' + String(currentLabel || '').slice(0, 20) + '」（共 ' + items.length + ' 项）');
+            return null;
+        }
         var ret = (idx + 1 < items.length) ? items[idx + 1] : null;
         logDebug('menu', '匹配「' + (String(currentLabel || '').slice(0, 20)) + '」→ idx=' + idx
             + (ret ? '，下一个=「' + itemFullText(ret).slice(0, 24) + '」' : '，无下一个（当前是最后一项）'));
@@ -5634,144 +5925,246 @@
     // 从当前标签向后找「下一个内容标签」。
     // 随堂测验也照进不误——自动学习会在里面作答并提交，然后停留 10 秒再走。
     // 只有单元测验/作业/考试这类才跳过。
+    //
+    // 实现要点（对齐 Auto_Mooc 的 next_pro）：先取「当前标签所在内容条」的
+    // 完整有序列表，再按索引 +1，而不是从当前节点走 nextElementSibling。
+    // 兄弟遍历在两种结构下必坏：①tab 被 <li>/<div> 包着（走一步就 null）；
+    // ②内容条外层还套着滚动容器（兄弟是别的壳）。坏了的表现就是「本节只学了
+    // 第一个，后面的文档/测验/讨论全被跳过」，直接跳下一节。
     function nextTabInLesson(fromTab) {
-        var s = fromTab, skipped = [];
-        while (s) {
-            s = s.nextElementSibling;
-            if (!s) return null;
-            if (s.getAttribute && s.getAttribute('role') === 'tab' && isVisible(s)) {
-                if (tabIsExamLike(s)) { skipped.push(cleanText((s.textContent || '')).slice(0, 12)); continue; }
-                if (skipped.length) logDebug('nav', '同小节内跳过单元测验/考试类标签：' + skipped.join('、'));
-                if (tabIsQuiz(s)) logDebug('nav', '同小节下一个内容＝随堂测验「' + cleanText((s.textContent || '')).slice(0, 12) + '」，自动学习会作答并提交');
-                return s;
-            }
+        if (!fromTab) return null;
+        var strip = null;
+        try { strip = fromTab.closest ? fromTab.closest('.learn-unit-tabs-scroll, [role="tablist"]') : null; } catch (e) { strip = null; }
+        var tabs = strip ? tabsOfStrip(strip) : contentTabs();
+        if (!tabs.length) return null;
+
+        var idx = tabs.indexOf(fromTab);
+        if (idx === -1) {
+            // 框架重渲染过，元素引用变了：按 key 定位同一个内容
+            var k = tabKey(fromTab);
+            for (var i = 0; i < tabs.length; i++) if (tabKey(tabs[i]) === k) { idx = i; break; }
         }
+        if (idx === -1) {
+            logDebug('nav', '⚠️ 当前标签不在内容条列表里（可能是残留节点），按兄弟节点兜底');
+            var s = fromTab, skipped0 = [];
+            while (s) {
+                s = s.nextElementSibling;
+                if (!s) return null;
+                if (s.getAttribute && (s.getAttribute('role') === 'tab' || s.tagName === 'BUTTON') && isVisible(s)) {
+                    if (tabIsExamLike(s)) { skipped0.push(cleanText((s.textContent || '')).slice(0, 12)); continue; }
+                    if (skipped0.length) logDebug('nav', '同小节内跳过单元测验/考试类标签：' + skipped0.join('、'));
+                    return s;
+                }
+            }
+            return null;
+        }
+        logDebug('nav', '内容条共 ' + tabs.length + ' 项，当前索引=' + idx);
+
+        var skipped = [];
+        for (var j = idx + 1; j < tabs.length; j++) {
+            var t = tabs[j];
+            if (tabIsExamLike(t)) { skipped.push(tabLabel(t).slice(0, 12)); continue; }
+            if (skipped.length) logDebug('nav', '同小节内跳过单元测验/考试类标签：' + skipped.join('、'));
+            if (tabIsQuiz(t)) logDebug('nav', '同小节下一个内容＝随堂测验「' + tabLabel(t).slice(0, 12) + '」，自动学习会作答并提交');
+            return t;
+        }
+        if (skipped.length) logDebug('nav', '同小节内跳过单元测验/考试类标签：' + skipped.join('、'));
         return null;
     }
 
     // 标签列表里第一个可进入的内容标签（跨小节/章节后自动点它）
     function firstTabInLesson(tabs) {
-        var i, t;
-        for (i = 0; i < tabs.length; i++) {
-            t = tabs[i];
+        var list = (tabs && tabs.length) ? tabs : contentTabs();
+        for (var i = 0; i < list.length; i++) {
+            var t = list[i];
             if (t && !tabIsExamLike(t)) return t;
         }
         return null;
     }
 
-    // 等待内容标签栏完成切换：出现「不是旧激活元素」的新 tab 才算切换成功。
-    // 关键：SPA 框架（React/Vue）会复用 tablist 容器、替换内部 tab 元素，
-    // 所以必须用「元素身份变化」判断（旧元素被新元素替换），不能用 waitForElement
-    // 命中容器里已存在的旧元素——否则会点到上一节的内容。
-    async function waitForTablistRefresh(oldTab) {
+    // 等待内容标签栏完成切换。
+    // 判定标准从「出现不是旧激活元素的 tab」改成「激活项换了」：
+    // SPA 框架（React/Vue）会把 tablist 连同 tab 元素整批复用，只改激活 class。
+    // 老判据在这种情况下永远不成立 → 白等 10 秒 → 判跨小节失败。
+    async function waitForTablistRefresh(oldTab, oldKey) {
         var t0 = Date.now();
         while (Date.now() - t0 < 10000) {
             if (taskState.cancelled) return null;
-            var tabs = contentTabs();
-            if (tabs.length > 0) {
-                var changed = false;
-                for (var i = 0; i < tabs.length; i++) {
-                    if (tabs[i] !== oldTab) { changed = true; break; }
-                }
-                if (changed) {
-                    logDebug('nav', 'tablist 已刷新：' + tabs.length + ' 个内容标签，等待耗时 ' + (Date.now() - t0) + 'ms');
+            var cur = currentContentTab();
+            if (cur) {
+                var changedByNode = oldTab && cur !== oldTab;
+                var changedByKey = !!(oldKey && tabKey(cur) && tabKey(cur) !== oldKey);
+                var oldDetached = oldTab && !document.contains(oldTab);
+                if (changedByNode || changedByKey || oldDetached) {
+                    var tabs = contentTabs();
+                    logDebug('nav', 'tablist 已切换：新内容「' + tabLabel(cur).slice(0, 20) + '」，共 '
+                        + tabs.length + ' 个标签，等待耗时 ' + (Date.now() - t0) + 'ms');
                     return tabs;
                 }
             }
             await sleep(200);
         }
-        logDebug('nav', '⚠️ tablist 刷新超时（10 秒内旧元素未被替换）');
+        logDebug('nav', '⚠️ tablist 切换超时（10 秒内激活项未变化）');
         return null;
     }
 
-    // 展开「小节」下拉，返回「下一个小节」选项；当前小节是最后一项（无下一项）返回 null。
-    // 无下一项时顺手收起下拉，避免残留影响后续章节跳转。
+    // 展开「小节」下拉，返回下一个节点。
+    // 返回结构统一为 { ok, item, reason }：
+    //   ok=true            → item 是下一节（或下一节的分组标题）
+    //   reason='last'      → 确认当前就是本章最后一节
+    //   reason='unmatched' → 下拉里找不到当前小节（结构/文案变了）
+    //   reason='nodropdown'→ 没找到小节下拉按钮
+    // unmatched 和 last 必须分开：老代码两者都返回 null，于是「匹配失败」被当成
+    // 「本节已结束」直接跳章 —— 一整节的文档/测验/讨论就这样集体消失。
     async function pickNextSectionItem() {
         var dd = headerDropdowns();
-        if (!dd.section) { logDebug('nav', '⚠️ 未找到「小节」下拉按钮'); return null; }
+        if (!dd.section) { logDebug('nav', '⚠️ 未找到「小节」下拉按钮'); return { ok: false, item: null, reason: 'nodropdown' }; }
         var name = dd.section.getAttribute('aria-label') || '';
         logDebug('nav', '跨小节决策：小节名=「' + name.slice(0, 24) + '」');
         var items = await findDropdownItems(dd.section);
         var next = nextOfMenuItems(items, name);
         if (!next) {
-            logDebug('nav', '小节下拉无下一项 → 判定当前小节是本章最后一项，进入跨章节');
+            var unmatched = lastMenuMatch.idx === -1;
             if (dd.section.getAttribute('aria-expanded') === 'true') realClick(dd.section);
-            return null;
+            if (unmatched) {
+                logDebug('nav', '⚠️ 小节下拉里定位不到当前小节 → 不做跨章节判断，避免漏掉整节');
+                return { ok: false, item: null, reason: 'unmatched' };
+            }
+            logDebug('nav', '小节下拉无下一项 → 判定当前小节是本章最后一项，进入跨章节');
+            return { ok: false, item: null, reason: 'last' };
         }
         logDebug('nav', '跨小节目标=「' + itemFullText(next).slice(0, 24) + '」');
-        return next;
+        return { ok: true, item: next, reason: 'ok' };
     }
 
-    // 展开「章节」下拉，返回「下一个章节」选项；无下一项（全部章节学完）返回 null。
+    // 展开「章节」下拉，返回下一个章节节点（无下一项＝全部学完）
     async function pickNextChapterItem() {
         var dd = headerDropdowns();
-        if (!dd.chapter) { logDebug('nav', '⚠️ 未找到「章节」下拉按钮'); return null; }
+        if (!dd.chapter) { logDebug('nav', '⚠️ 未找到「章节」下拉按钮'); return { ok: false, item: null, reason: 'nodropdown' }; }
         var name = dd.chapter.getAttribute('aria-label') || '';
         logDebug('nav', '跨章节决策：章节名=「' + name.slice(0, 24) + '」');
         var items = await findDropdownItems(dd.chapter);
         var next = nextOfMenuItems(items, name);
         if (!next) {
-            logDebug('nav', '章节下拉无下一项 → 判定全部章节学完');
+            var unmatched = lastMenuMatch.idx === -1;
             if (dd.chapter.getAttribute('aria-expanded') === 'true') realClick(dd.chapter);
-            return null;
+            if (unmatched) {
+                logDebug('nav', '⚠️ 章节下拉里定位不到当前章节 → 不判定“全部学完”');
+                return { ok: false, item: null, reason: 'unmatched' };
+            }
+            logDebug('nav', '章节下拉无下一项 → 判定全部章节学完');
+            return { ok: false, item: null, reason: 'last' };
         }
         logDebug('nav', '跨章节目标=「' + itemFullText(next).slice(0, 24) + '」');
-        return next;
+        return { ok: true, item: next, reason: 'ok' };
     }
 
-    // 执行跨小节：点击小节选项 → 等新 tablist → 点第一个内容标签（随堂测验也进）
-    // 兜底：点击的是分组标题（第一节/第二节）且平台不响应（tablist 未刷新）时，
+    // 跨小节点击后激活项没变：说明点的是「分组标题」这类只定位不加载的节点。
+    // 改为点该节下面第一个真正的内容单元（文档/视频/测验/讨论）。
+    async function clickFirstContentAfterSection(sectionLabel, oldTab, oldKey) {
+        var dd = headerDropdowns();
+        if (!dd.section) return null;
+        var items = await findDropdownItems(dd.section);
+        // 注意：这里重新取到的 items 是新节点，不能拿旧 item 去 indexOf
+        //（老代码正是这么写的，结果恒为 -1，兜底逻辑从来没生效过）。
+        // 改用文案 / 编号重新定位当前节。
+        var target = normMatch(sectionLabel);
+        var code = codeKeyOf(sectionLabel);
+        var idx = -1, i;
+        for (i = 0; i < items.length; i++) {
+            var k = normMatch(itemFullText(items[i]));
+            if (k && target && (k === target || k.indexOf(target) !== -1 || target.indexOf(k) !== -1)) { idx = i; break; }
+        }
+        if (idx === -1 && code) {
+            for (i = 0; i < items.length; i++) if (codeKeyOf(itemFullText(items[i])) === code) { idx = i; break; }
+        }
+        if (idx === -1) {
+            logDebug('nav', '⚠️ 兜底也定位不到「' + String(sectionLabel).slice(0, 20) + '」，放弃本次跨小节');
+            return null;
+        }
+        for (var j = idx + 1; j < items.length; j++) {
+            var ft = itemFullText(items[j]);
+            if (ft && !isGroupTitle(ft)) {
+                logDebug('nav', '改点该节第一个内容单元=「' + ft.slice(0, 20) + '」');
+                clickMenuItem(items[j]);
+                return await waitForTablistRefresh(oldTab, oldKey);
+            }
+        }
+        return null;
+    }
+
+    // 进入新小节/新章节的第一个内容标签（随堂测验也进），并登记「我应该在哪个内容上」
+    async function enterFirstTab(tabs) {
+        var first = firstTabInLesson(tabs);
+        if (!first) {
+            // 整节都是单元测验/作业/考试类标签（没有可学内容）：仍进第一个，
+            // 否则学习会停在这里不动。learnOne 里对这类页面零点击、只短暂停留。
+            first = (tabs && tabs[0]) || null;
+            if (first) logDebug('nav', '⚠️ 本节内容全是单元测验/作业/考试类标签，仍进入第一个以免卡住');
+        }
+        if (!first) return false;
+        var key = tabKey(first);
+        learnSetExpect(key, contentKindFromTab(first));
+        realClick(first);
+        if (!await waitForTabActive(first, 4000)) {
+            // 节点可能刚被框架替换过：按文案重新取一次再点
+            var fresher = findTabByKey(key);
+            if (fresher && fresher !== first) {
+                realClick(fresher);
+                if (await waitForTabActive(fresher, 4000)) {
+                    logDebug('nav', '已进入新小节第一个内容：「' + key.slice(0, 20) + '」');
+                    return true;
+                }
+            }
+            logDebug('nav', '⚠️ 已点击新小节第一个内容，但激活态未确认（仍按该内容继续处理）');
+        }
+        return true;
+    }
+
+    // 执行跨小节：点击小节选项 → 等激活项切换 → 点第一个内容标签（随堂测验也进）
+    // 兜底：点击的是分组标题（第一节/第二节）且平台不响应（激活项未变）时，
     // 自动改点该分组标题后面的第一个内容单元，保证不会卡在“节标题被跳过/无反应”。
     async function doSectionJump(item) {
         var oldTab = currentContentTab();
+        var oldKey = oldTab ? tabKey(oldTab) : '';
+        var itemLabel = itemFullText(item);
         clickMenuItem(item);
         updateStatus('📚 跨小节：进入下一节，自动播放第一个内容...');
-        var tabs = await waitForTablistRefresh(oldTab);
+        var tabs = await waitForTablistRefresh(oldTab, oldKey);
         if (!tabs || tabs.length === 0) {
-            // 分组标题可能只是定位/无点击效果：改点该节第一个内容单元
-            logDebug('nav', '⚠️ 点击「' + itemFullText(item).slice(0, 20) + '」后 tablist 未刷新，改点该节第一个内容单元');
-            var dd = headerDropdowns();
-            if (dd.section) {
-                var items = await findDropdownItems(dd.section);
-                var idx = items.indexOf(item);
-                var nextContent = null;
-                for (var j = idx + 1; j < items.length; j++) {
-                    var ft = itemFullText(items[j]);
-                    if (ft && !isGroupTitle(ft)) { nextContent = items[j]; break; }
-                }
-                if (nextContent) {
-                    clickMenuItem(nextContent);
-                    tabs = await waitForTablistRefresh(oldTab);
-                }
-            }
+            logDebug('nav', '⚠️ 点击「' + itemLabel.slice(0, 20) + '」后激活项未切换，改点该节第一个内容单元');
+            tabs = await clickFirstContentAfterSection(itemLabel, oldTab, oldKey);
         }
         if (!tabs || tabs.length === 0) return false;
-        var first = firstTabInLesson(tabs) || tabs[0];
-        realClick(first);
-        await waitForTabActive(first);
-        return true;
+        return await enterFirstTab(tabs);
     }
 
-    // 执行跨章节：点击章节选项 → 等新 tablist（必要时先点第一个小节）→ 点第一个内容标签（随堂测验也进）
+    // 执行跨章节：点击章节选项 → 等激活项切换（必要时先点第一个小节）→ 点第一个内容标签
     async function doChapterJump(item) {
         var oldTab = currentContentTab();
+        var oldKey = oldTab ? tabKey(oldTab) : '';
+        var itemLabel = itemFullText(item);
         clickMenuItem(item);
         updateStatus('📕 跨章节：进入下一章，自动播放第一个内容...');
-        var tabs = await waitForTablistRefresh(oldTab);
+        var tabs = await waitForTablistRefresh(oldTab, oldKey);
         if (!tabs || tabs.length === 0) {
-            // 若平台未自动选中第一小节，展开小节下拉点第一项
+            // 若平台未自动选中第一小节，展开小节下拉点第一项（同样按重新取到的节点点）
             var dd2 = headerDropdowns();
             if (dd2.section) {
                 var items2 = await findDropdownItems(dd2.section);
-                if (items2.length > 0) { clickMenuItem(items2[0]); await sleep(600); }
+                if (items2.length > 0) {
+                    logDebug('nav', '跨章节后未自动进入小节，改点小节下拉第一项=「' + itemFullText(items2[0]).slice(0, 20) + '」');
+                    clickMenuItem(items2[0]);
+                    await sleep(600);
+                }
             }
-            tabs = await waitForTablistRefresh(oldTab);
+            if (!tabs || tabs.length === 0) tabs = await waitForTablistRefresh(oldTab, oldKey);
         }
-        if (!tabs || tabs.length === 0) return false;
-        var first = firstTabInLesson(tabs) || tabs[0];
-        realClick(first);
-        await waitForTabActive(first);
-        return true;
+        if (!tabs || tabs.length === 0) {
+            logDebug('nav', '⚠️ 跨章节点击「' + itemLabel.slice(0, 20) + '」后内容条未切换');
+            return false;
+        }
+        return await enterFirstTab(tabs);
     }
 
     // 主跳转入口（严格三级优先级：同小节 → 跨小节 → 跨章节 → 结束）
@@ -5782,7 +6175,12 @@
         // 与 MOOC 的 tablist 完全两套。先走 SPOC；它认不出结构时返回 null 再兜底。
         if (isSpocCourse()) {
             var spocResult = await spocGoNext();
-            if (spocResult === true) return true;
+            if (spocResult === true) {
+                // SPOC 的「当前项」是 .current 而不是内容条标签，这里不做预期锚定，
+                // 否则等待期会被“预期内容对不上”的兜底反复触发。
+                learnSetExpect('', '');
+                return true;
+            }
             if (spocResult === false) {
                 logDebug('nav', '🏁 SPOC：全部章节学完 → 课程学习完成');
                 alert('课程学习完成！');
@@ -5795,40 +6193,96 @@
         var curTab = currentContentTab();
         if (!curTab) {
             logDebug('nav', '当前激活 tab 未找到，等待出现...');
-            curTab = await waitForElement('[role="tab"][aria-selected="true"]', 5000);
+            var wt0 = Date.now();
+            while (Date.now() - wt0 < 5000 && !taskState.cancelled) {
+                await sleep(200);
+                curTab = currentContentTab();
+                if (curTab) break;
+            }
             if (!curTab) { logDebug('nav', '❌ 5 秒后仍无激活 tab'); updateStatus('❌ 未找到当前内容标签，无法跳转'); return false; }
         }
-        logDebug('nav', 'goNext 入口：当前激活 tab=「' + (curTab.getAttribute('aria-label') || cleanText(curTab.textContent).slice(0, 20)) + '」');
-        // 优先级 1：同小节内 —— 向后找下一个内容标签（随堂测验也进）
+        var curKey = tabKey(curTab);
+        logDebug('nav', 'goNext 入口：当前激活 tab=「' + tabLabel(curTab).slice(0, 20) + '」');
+
+        // 跳转前先校准位置：处理内容的这段时间里，平台可能又把页面带走了
+        //（已看完视频的“自动播放下一集”）。若当前位置和预期不符、而预期内容
+        // 还在内容条里，先切回去再算“下一个”——否则会从被带走的位置继续，
+        // 中间那些文档/测验/讨论就成了永久漏项。
+        var stNow = learnLoadState();
+        var expectNow = (stNow && stNow.expectKey) || '';
+        if (expectNow && curKey && !sameTabKey(curKey, expectNow)) {
+            var backTab = findTabByKey(expectNow);
+            if (backTab) {
+                logDebug('nav', '⚠️ 跳转前校准：当前「' + curKey.slice(0, 20) + '」≠ 预期「'
+                    + expectNow.slice(0, 20) + '」，先切回预期内容');
+                realClick(backTab);
+                if (await waitForTabActive(backTab, 3000)) {
+                    curTab = backTab;
+                    curKey = tabKey(curTab);
+                    updateStatus('↩️ 页面被平台自动切走，已切回原内容继续按顺序前进...');
+                } else {
+                    logDebug('nav', '⚠️ 校准切回未生效，按当前位置继续');
+                }
+            }
+        }
+        // 优先级 1：同小节内 —— 按内容条索引取下一个（随堂测验也进）
         var target = nextTabInLesson(curTab);
         if (target) {
+            var targetKey = tabKey(target);
+            if (targetKey && targetKey === curKey) {
+                logDebug('nav', '⚠️ 下一个内容与当前内容同名（' + targetKey + '），跳过同小节跳转，避免原地打转');
+                target = null;
+            }
+        }
+        if (target) {
+            learnSetExpect(tabKey(target), contentKindFromTab(target));
             realClick(target);
             updateStatus('➡️ 同小节：进入下一个内容');
-            logDebug('nav', '优先级1 同小节：点击「' + (target.getAttribute('aria-label') || cleanText(target.textContent).slice(0, 20)) + '」');
-            await waitForTabActive(target);
-            return true;
+            logDebug('nav', '优先级1 同小节：点击「' + tabLabel(target).slice(0, 20) + '」');
+            var activated = await waitForTabActive(target);
+            if (!activated) {
+                // 点一次没反应（元素刚被框架替换、或被浮层挡住）：补一次再确认
+                var again = findTabByKey(tabKey(target)) || target;
+                logDebug('nav', '⚠️ 首次点击后激活态未确认，补点一次');
+                realClick(again);
+                activated = await waitForTabActive(again, 3000);
+            }
+            if (activated) return true;
+            logDebug('nav', '⚠️ 同小节标签两次点击均未激活，退回跨小节判断');
+            updateStatus('⚠️ 同小节切换未生效，改走跨小节...');
+        } else {
+            logDebug('nav', '优先级1 无下一个同小节 tab（已到本节末尾）');
         }
-        logDebug('nav', '优先级1 无下一个同小节 tab（已到本节末尾）');
         // 优先级 2：跨小节 —— 先确认小节下拉里确有下一项
-        var secItem = await pickNextSectionItem();
-        if (secItem) {
-            if (await doSectionJump(secItem)) return true;
+        var secRes = await pickNextSectionItem();
+        if (secRes.ok) {
+            if (await doSectionJump(secRes.item)) return true;
             // 跨小节执行失败（点击了但内容未加载）：重试一次，绝不误跳章节
             updateStatus('⚠️ 跨小节执行失败，10 秒后自动重试...');
             logDebug('nav', '⚠️ 跨小节失败，10 秒后重试');
             await sleepWhile(10000, function () { return manualWaitFlag; });
-            secItem = await pickNextSectionItem();
-            if (secItem && await doSectionJump(secItem)) return true;
+            secRes = await pickNextSectionItem();
+            if (secRes.ok && await doSectionJump(secRes.item)) return true;
             logDebug('nav', '⚠️ 跨小节连续失败');
             updateStatus('⚠️ 跨小节连续失败：请手动点击「小节」下拉切换，或检查顶部按钮结构');
             return false;
         }
+        if (secRes.reason === 'unmatched') {
+            // 定位不到当前小节时绝不能跳章：那样会把这一整节剩下的内容全漏掉
+            updateStatus('⚠️ 小节下拉里定位不到当前小节，已停止（不再跳章以免漏学整节）。可手动切换一节后重新开始');
+            return false;
+        }
         // 优先级 3：跨章节 —— 已确认当前小节是本章最后一项
-        var chapItem = await pickNextChapterItem();
-        if (chapItem) {
-            if (await doChapterJump(chapItem)) return true;
+        var chapRes = await pickNextChapterItem();
+        if (chapRes.ok) {
+            if (await doChapterJump(chapRes.item)) return true;
             logDebug('nav', '⚠️ 跨章节执行失败');
             updateStatus('⚠️ 跨章节执行失败：请手动点击「章节」下拉切换，或检查顶部按钮结构');
+            return false;
+        }
+        if (chapRes.reason === 'unmatched' || chapRes.reason === 'nodropdown' || secRes.reason === 'nodropdown') {
+            // 结构没识别出来 ≠ 学完了：宁可停下提示，也不要谎报“课程学习完成”
+            updateStatus('⚠️ 顶部导航结构没识别出来，已停止跳转（详见日志 menu/nav 分类）');
             return false;
         }
         // 结束状态：所有查找都返回 null
@@ -5902,6 +6356,18 @@
 
     // —— 自动学习主流程 ——
 
+    // 当前这个视频是不是「此前就已经看完」的。
+    // 注意排除「上一段视频的 DOM 还没被换掉」这种情况：那种节点也停在结尾，
+    // 但它属于上一个内容，拿它判断会把刚切过来的新视频误判成已完成而跳过。
+    var learnLastVideoEl = null;
+
+    function isCurrentVideoAlreadyDone() {
+        var v = findVideo();
+        if (v && v === learnLastVideoEl) return false;   // 还是上一段视频的节点，不作数
+        if (v && videoWatchedOut(v)) return true;
+        return tabLooksDone(currentContentTab());
+    }
+
     // 处理当前内容（视频/文档/测验/讨论），然后自动进入下一个内容
     async function learnOne() {
         var st = learnLoadState();
@@ -5952,10 +6418,18 @@
             logDebug('learn', 'missing：跳过，进入下一个内容');
             updateStatus('⚠️ 内容加载失败，尝试进入下一个内容...');
             done = true;
-        } else if (type === 'video' && st.lastType === 'video') {
-            // 连续视频跳过：不视频接视频
-            logDebug('learn', '连续视频：跳过当前视频（不视频接视频）');
-            updateStatus('⏭ 跳过连续视频（不视频接视频），进入下一个内容...');
+        } else if (type === 'video' && isCurrentVideoAlreadyDone()) {
+            // 落点是此前已看完的视频：不重播。
+            // 重播会把 currentTime 拉回 0（白耗一整集），而且这期间平台的
+            // “自动播放下一集”会抢跑，把后面的文档/测验/讨论整段带过去。
+            logDebug('learn', 'video：该视频此前已看完，不重播，直接进入下一个内容');
+            updateStatus('⏭ 该视频此前已看完，跳过重播，进入下一个内容...');
+            done = true;
+        } else if (type === 'video' && CONFIG.LEARN_SKIP_CONSECUTIVE_VIDEO && st.lastType === 'video') {
+            // 老行为（默认已关）：视频→视频 直接跳过第二个。
+            // 但这条会让人成片漏学，默认不再开；需要时把配置改成 true。
+            logDebug('learn', '连续视频：按配置跳过（LEARN_SKIP_CONSECUTIVE_VIDEO=true）');
+            updateStatus('⏭ 跳过连续视频（配置为不视频接视频），进入下一个内容...');
             done = true;
         } else if (type === 'video') {
             done = await learnVideoItem();
@@ -6044,12 +6518,19 @@
             return;
         }
         // 关掉平台自带的“自动播放下一集”，避免和我们自己的跳转抢节奏
-        var autoNext = document.querySelector('input.j-autoNext');
-        if (autoNext && autoNext.checked) { realClick(autoNext); updateStatus('已关闭平台自带的“自动播放下一集”'); }
+        // （这也是「已看完的视频 5 秒后自己跳到下一集、把中间内容带过去」的元凶）
+        if (turnOffPlatformAutoNext()) updateStatus('已关闭平台自带的“自动播放下一集”');
 
-        learnSaveState({ running: true, course: location.pathname.replace(/\/content\/\d+.*$/, '') || location.pathname, lastType: null });
+        learnSaveState({
+            running: true,
+            course: location.pathname.replace(/\/content\/\d+.*$/, '') || location.pathname,
+            lastType: null,
+            expectKey: '',
+            expectKind: ''
+        });
         // 手动重新开始：不受上一轮跳转留下的等待影响
         lastJumpAt = 0;
+        learnLastVideoEl = null;
         setFloatVisible(true);
         logDebug('learn', '🚀 手动开始自动学习，课程=' + location.pathname.slice(0, 60));
         updateStatus('🚀 自动学习开始：从当前内容处理，视频看完自动进入下一个内容...');
