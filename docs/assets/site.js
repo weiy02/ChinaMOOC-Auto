@@ -128,6 +128,7 @@
       'gf-total': 'https://img.shields.io/greasyfork/dt/595205.svg',
       'gf-daily': 'https://img.shields.io/greasyfork/dd/595205.svg',
       'sc-total': 'https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.total_install&label=installs',
+      'sc-daily': 'https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833&query=%24.data.today_install&label=today&color=orange',
       'gh-stars': 'https://img.shields.io/github/stars/weiy02/ChinaMOOC-Auto.svg'
     };
     var CACHE_KEY = 'mooc-stats-v1';
