@@ -4,17 +4,15 @@
 
 ![Version](https://img.shields.io/badge/Version-2.1-green)
 
+![ScriptCat Daily](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833\&query=%24.data.today_install\&label=ScriptCat%20Daily\&color=orange)
+
+![ScriptCat Total](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833\&query=%24.data.total_install\&label=ScriptCat%20Total\&color=orange)
+
 ![GreasyFork Daily](https://img.shields.io/greasyfork/dd/595205?label=GreasyFork%20Daily)
 
 ![GreasyFork Total](https://img.shields.io/greasyfork/dt/595205?label=GreasyFork%20Total)
 
-![ScriptCat Daily](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833\&query=%24.data.today_install\&label=ScriptCat%20Daily\&color=orange)
-
-
-
-![ScriptCat Total](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833\&query=%24.data.total_install\&label=ScriptCat%20Total\&color=orange)
-
-面向中国大学 MOOC / SPOC（icourse163.org）的用户脚本（Tampermonkey / 脚本猫均可用），自动识别两类课程并走对应前端分支，覆盖四大场景：**互评作业自动化、课堂讨论自动回复、随堂测验一键作答、整章自动学习**（视频 / 文档 / 测验 / 讨论全类型自动推进），并提供开发者调试日志与页面结构诊断，便于适配新版 UI。
+面向中国大学 MOOC / SPOC（icourse163.org）的用户脚本（**脚本猫为主渠道**，油猴 / Tampermonkey 同样可用），自动识别两类课程并走对应前端分支，覆盖四大场景：**互评作业自动化、课堂讨论自动回复、随堂测验一键作答、整章自动学习**（视频 / 文档 / 测验 / 讨论全类型自动推进），并提供开发者调试日志与页面结构诊断，便于适配新版 UI。
 
 > 脚本依赖平台 DOM 结构，随慕课新版 UI 持续维护。页面改版后可先用「页面 DOM 诊断」导出结构，反馈给作者精准适配。
 
@@ -261,16 +259,16 @@
 
 ### 一键安装（推荐）
 
-| 渠道            | 适合的脚本管理器                     | 链接                                            |
-| ------------- | ---------------------------- | --------------------------------------------- |
-| Greasy Fork   | Tampermonkey / Violentmonkey | <https://greasyfork.org/scripts/595205>       |
-| 脚本猫 ScriptCat | 脚本猫（兼容 Tampermonkey）         | <https://scriptcat.org/script-show-page/8833> |
+| 渠道                | 适合的脚本管理器                     | 链接                                            |
+| ----------------- | ---------------------------- | --------------------------------------------- |
+| **脚本猫 ScriptCat（推荐）** | 脚本猫（国内商店直连、中文界面）             | <https://scriptcat.org/script-show-page/8833> |
+| Greasy Fork       | Tampermonkey / Violentmonkey | <https://greasyfork.org/scripts/595205>       |
 
-两个渠道发布的是**同一份 `main.js`**，`@namespace` 与 `@name` 一致，功能完全相同，随便装哪个都行；已装其中一个的不必重复安装。
+两个渠道发布的是**同一份 `main.js`**，`@namespace` 与 `@name` 一致，功能完全相同；**主渠道是脚本猫**，油猴渠道作为备选，已装其中一个的不必重复安装。
 
 ### 手动安装
 
-1. 安装浏览器扩展 **Tampermonkey**（或脚本猫）。
+1. 安装浏览器扩展 **脚本猫**（推荐，国内访问更稳）或 **Tampermonkey**。
 2. 打开 `main.js`，复制全部脚本内容。
 3. 在管理器里新建脚本并粘贴保存（脚本自带 `@match *://www.icourse163.org/*`）。
 4. 进入中国大学 MOOC 学习页 / 互评页 / 讨论页，按需使用对应功能。

@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>中国大学 MOOC 自动化脚本 · 互评 / 讨论 / 随堂测验 / 整章自动学习</title>
-<meta name="description" content="面向中国大学 MOOC / SPOC 的用户脚本（Tampermonkey / 脚本猫通用）：互评作业自动化、课堂讨论自动回复、随堂测验一键作答、整章自动学习，自动适配 MOOC 与 SPOC 两套前端。">
-<meta name="keywords" content="中国大学MOOC,慕课,自动化脚本,user script,油猴,Tampermonkey,脚本猫,icourse163,SPOC,互评,随堂测验">
+<meta name="description" content="面向中国大学 MOOC / SPOC 的用户脚本（脚本猫 / Tampermonkey 通用）：互评作业自动化、课堂讨论自动回复、随堂测验一键作答、整章自动学习，自动适配 MOOC 与 SPOC 两套前端。">
+<meta name="keywords" content="中国大学MOOC,慕课,自动化脚本,脚本猫,ScriptCat,user script,油猴,Tampermonkey,icourse163,SPOC,互评,随堂测验">
 <link rel="canonical" href="https://weiy02.github.io/ChinaMOOC-Auto/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="中国大学 MOOC 自动化脚本">
-<meta property="og:description" content="互评、讨论、随堂测验、整章自动学习，一个脚本全包。自动适配 MOOC 与 SPOC 两套前端。">
+<meta property="og:description" content="互评、讨论、随堂测验、整章自动学习，一个脚本全包。脚本猫一键安装，也兼容油猴。自动适配 MOOC 与 SPOC 两套前端。">
 <meta property="og:url" content="https://weiy02.github.io/ChinaMOOC-Auto/">
 <meta property="og:image" content="https://weiy02.github.io/ChinaMOOC-Auto/assets/og.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -50,16 +50,16 @@
         <h1>把慕课的学习流程<br><span class="hl">交给一个脚本</span></h1>
         <p class="lede">面向中国大学 MOOC / SPOC 的用户脚本，Tampermonkey 与脚本猫均可直接安装。互评、讨论、随堂测验、整章自动学习四大场景全覆盖，自动识别两套前端，互不干扰。</p>
         <div class="cta-row">
-          <a class="btn btn-primary" href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener">
+          <a class="btn btn-primary" href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener">
+            <span>从脚本猫安装</span>
+            <small>ScriptCat · 推荐</small>
+          </a>
+          <a class="btn btn-ghost" href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener">
             <span>从 Greasy Fork 安装</span>
             <small id="gf-count">Tampermonkey / Violentmonkey</small>
           </a>
-          <a class="btn btn-ghost" href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener">
-            <span>从脚本猫安装</span>
-            <small>ScriptCat</small>
-          </a>
         </div>
-        <p class="tiny">两个渠道发布同一份 <code>main.js</code>，功能完全一致，装一个就行。</p>
+        <p class="tiny">主渠道是<b>脚本猫</b>：国内商店直连、中文界面、更新提醒更直接。习惯油猴的走 Greasy Fork，两个渠道发布同一份 <code>main.js</code>，功能完全一致，装一个就行。</p>
         <p class="tiny tiny-link">第一次用？看 <a href="./tutorial.html">图文教程（含流程截图与视频）→</a></p>
       </div>
 
@@ -113,6 +113,10 @@
 
   <section class="stats">
     <div class="wrap stats-inner">
+      <a class="stat" href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener" title="脚本猫总安装量">
+        <span class="stat-name">脚本猫安装</span>
+        <span class="stat-value" data-stat="sc-total">70</span>
+      </a>
       <a class="stat" href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener" title="Greasy Fork 总安装量">
         <span class="stat-name">GreasyFork 总安装</span>
         <span class="stat-value" data-stat="gf-total">12</span>
@@ -120,10 +124,6 @@
       <a class="stat" href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener" title="Greasy Fork 每日活跃安装">
         <span class="stat-name">每日活跃</span>
         <span class="stat-value" data-stat="gf-daily">0/day</span>
-      </a>
-      <a class="stat" href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener" title="脚本猫总安装量">
-        <span class="stat-name">脚本猫安装</span>
-        <span class="stat-value" data-stat="sc-total">70</span>
       </a>
       <a class="stat" href="https://github.com/weiy02/ChinaMOOC-Auto" target="_blank" rel="noopener" title="GitHub Stars">
         <span class="stat-name">Stars</span>
@@ -197,12 +197,12 @@
         <div class="step">
           <span class="step-no">01</span>
           <h3>装个脚本管理器</h3>
-          <p><a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">Tampermonkey</a>（推荐）或 <a href="https://scriptcat.org/" target="_blank" rel="noopener">脚本猫</a>，Chrome / Edge / Firefox 均可。</p>
+          <p>推荐 <a href="https://scriptcat.org/" target="_blank" rel="noopener">脚本猫</a>——国内访问稳定、中文界面、装完即用；习惯油猴的也可以装 <a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">Tampermonkey</a>。Chrome / Edge / Firefox 均可。</p>
         </div>
         <div class="step">
           <span class="step-no">02</span>
           <h3>点一下安装</h3>
-          <p><a href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener">Greasy Fork</a> 或 <a href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener">脚本猫</a>，确认安装即可；也可以手动复制 <a href="https://raw.githubusercontent.com/weiy02/ChinaMOOC-Auto/main/main.js" target="_blank" rel="noopener">main.js</a> 粘贴新建。</p>
+          <p>打开 <a href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener">脚本猫脚本页</a>点「安装此脚本」；油猴用户走 <a href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener">Greasy Fork</a>。也可以手动复制 <a href="https://raw.githubusercontent.com/weiy02/ChinaMOOC-Auto/main/main.js" target="_blank" rel="noopener">main.js</a> 粘贴新建。</p>
         </div>
         <div class="step">
           <span class="step-no">03</span>
@@ -325,10 +325,10 @@
   <section class="final-cta">
     <div class="wrap">
       <h2>别一页一页点了</h2>
-      <p>装完就能跑，两个渠道都一样。</p>
+      <p>装完就能跑。主渠道脚本猫，油猴渠道同一份代码。</p>
       <div class="cta-row center">
-        <a class="btn btn-primary" href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener"><span>Greasy Fork 安装</span><small>推荐</small></a>
-        <a class="btn btn-ghost" href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener"><span>脚本猫安装</span><small>ScriptCat</small></a>
+        <a class="btn btn-primary" href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener"><span>脚本猫安装</span><small>推荐 · ScriptCat</small></a>
+        <a class="btn btn-ghost" href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener"><span>Greasy Fork 安装</span><small>油猴渠道</small></a>
       </div>
     </div>
   </section>
@@ -342,8 +342,8 @@
       <a href="./tutorial.html">使用教程</a>
       <a href="https://github.com/weiy02/ChinaMOOC-Auto" target="_blank" rel="noopener">GitHub</a>
       <a href="https://github.com/weiy02/ChinaMOOC-Auto/issues/new" target="_blank" rel="noopener">反馈问题</a>
-      <a href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener">Greasy Fork</a>
       <a href="https://scriptcat.org/script-show-page/8833" target="_blank" rel="noopener">脚本猫</a>
+      <a href="https://greasyfork.org/scripts/595205" target="_blank" rel="noopener">Greasy Fork</a>
     </nav>
   </div>
   <p class="disclaimer">本脚本仅用于学习流程辅助，请在平台允许的范围内使用；对因使用产生的后果不承担责任。</p>
