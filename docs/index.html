@@ -43,7 +43,7 @@
     <div class="wrap hero-inner">
       <div class="hero-copy">
         <div class="pill-row">
-          <span class="pill pill-live">当前版本 <b data-version>2.1</b></span>
+          <span class="pill pill-live">当前版本 <b data-version>2.1.1</b></span>
           <span class="pill">MOOC + SPOC</span>
           <span class="pill">MIT</span>
         </div>
@@ -158,7 +158,7 @@
         <article class="card">
           <div class="card-icon">测</div>
           <h3>随堂测验一键作答</h3>
-          <p>从课件接口（MOOC）或 dwr 响应（SPOC）取正确答案，逐题比对填涂后提交。选项按「平台 ID → 文案 → 字母顺序」三级定位，SPOC 两份答案源择优采用。题目对不上时只填不交，留状态说明让你手动补完，绝不交白卷。</p>
+          <p>从课件接口（MOOC）或 dwr 响应（SPOC）取正确答案，逐题比对填涂后提交。单选、多选、判断、<b>填空</b>都支持；选项按「平台 ID → 文案 → 字母顺序」三级定位，填空题按题干匹配后逐空写入并回读校验。题目对不上时只填不交，留状态说明让你手动补完，绝不交白卷。</p>
         </article>
         <article class="card">
           <div class="card-icon">学</div>
@@ -280,6 +280,14 @@
     <div class="wrap">
       <h2 class="sec-title">近期更新</h2>
       <ul class="timeline">
+        <li>
+          <span class="ver">2.1.1</span>
+          <div>
+            <h3>随堂测验的填空题能正常作答了</h3>
+            <p>以前填空题只认老版接口的 <code>correctAnswer</code>，遇到新版返回的 <code>correctOptionList</code> 就当成「没答案」；而且填空题没有选项，不会被识别成题块，于是出现「接口 5 题、页面 4 题」并拒绝提交。</p>
+            <p>现在按页面结构认题块（有输入框、没选项即填空），答案字段兼容 <code>correctOptionList</code> / <code>answers</code> / <code>correctAnswer</code>，多个空按顺序填并回读校验；空数与答案数不一致、或接口没给答案时仍然不提交。讨论区的回复框不会被误判成填空。</p>
+          </div>
+        </li>
         <li>
           <span class="ver">2.1</span>
           <div>

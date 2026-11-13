@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         中国大学MOOC-自动化
 // @namespace    https://github.com/weiy02/ChinaMOOC-Auto
-// @version      2.1
-// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；已看完的视频不重播；视频中弹出的题目默认直接拦截：不放行暂停、浮层一出现就收掉，视频一路播到底，拦不住时才自动作答并提交、答案优先取课件接口）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
+// @version      2.1.1
+// @description  中国大学MOOC/SPOC学生互评自动化：解析真实分值选最高分，评语“科技改变生活”，答题者不可见。支持停止、评分修复；课堂讨论自动回复（适配新版UI与SPOC，含页面DOM诊断）；随堂测验一键作答并提交（MOOC走课件接口、SPOC走dwr取答案，逐题比对填涂，单选/多选/判断/填空都支持）；自动学习（新版DOM导航：tab内容标签+章节/小节下拉模拟点击，SPOC走unitslist+j-up下拉；随堂测验自动作答提交后停留10秒、单元测验/考试不进入、富文本停留10秒自动跳）：从当前内容开始→视频从头播放→完成后进入本章下一个内容（文档每页1秒自动翻页，含新版缩略图阅读器；讨论自动回复；已看完的视频不重播；视频中弹出的题目默认直接拦截：不放行暂停、浮层一出现就收掉，视频一路播到底，拦不住时才自动作答并提交、答案优先取课件接口）。面板为暗色简约风格，只留按钮；标题栏「?」打开完整功能说明。
 // @author       weiy02
 // @match        *://www.icourse163.org/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=icourse163.org
@@ -2252,6 +2252,7 @@
         '<li>答案来源：MOOC 走课件接口 <code>unit-page</code>，SPOC 走 dwr 的 <code>getLessonUnitLearnVo</code>。</li>',
         '<li>读不到答案就一个选项都不点、也不提交；有题目没匹配上时只填不交，留给你手动补完。</li>',
         '<li>已经答过的会先点「重新答题」再作答。</li>',
+        '<li><b>填空题</b>：按题干匹配到题目后，把答案写进空里（支持多个空、以及富文本填空框）。答案字段兼容 <code>correctOptionList</code> / <code>answers</code> / <code>correctAnswer</code>；接口没给答案就不填、也不提交。</li>',
         '<li>单元测验、作业、考试是独立页面，一律不处理。</li>',
         '<li>自动学习走到这里时，会先等最多 8 秒让题块渲染出来再判定，不会因为「刚切过来还空着」就跳过。</li>',
         '</ul>',
@@ -2956,6 +2957,8 @@
                     if (seg) blanks.push(seg);
                 }
             }
+            // 有的 SPOC 试卷把填空答案放在 correctOptionList / answers 里
+            if (blanks.length === 0 && ids.length === 0 && labels.length === 0) blanks = lqBlankAnswersFrom(q);
 
             out.push({
                 type: lqPick(q, ['type', 'questionType', 'typeId'], ''),
@@ -2995,9 +2998,13 @@
             '[class*="LessonQuiz"]', '[class*="quiz-unit"]', '[class*="quizUnit"]',
         ],
         // 单题容器（SPOC 的随堂测验题块是 .m-choiceQuestion）
+        // 填空题的容器类名五花八门（m-fillblankQuestion / fillBlankItem / blank-item…），
+        // 认不出来就只当成「页面少渲染了一题」，最后卡在「不提交」。这里一并列上。
         blockSelectors: [
-            'article', 'fieldset', '.m-choiceQuestion', '.j-questionItem',
+            'article', 'fieldset', '.m-choiceQuestion', '.m-fillblankQuestion', '.j-questionItem',
             '[class*="questionItem"]', '[class*="question-item"]', '[class*="questionBlock"]',
+            '[class*="fillblank"]', '[class*="fillBlank"]', '[class*="fill-blank"]',
+            '[class*="blankItem"]', '[class*="blank-item"]',
         ],
         MAX_BLOCKS: 60,
         SUBMIT_TEXT: /^(提交|提交答案|提交试卷|交卷)$/,
@@ -3089,10 +3096,14 @@
 
     // 页面上的题目区块。优先 article/fieldset；没有就从选项输入框往上爬，
     // 爬到「同一题的所有选项」那个容器为止。
+    // 填空题没有单选/多选，只有输入框——所以最后还要单独捞一遍「纯填空块」，
+    // 否则一整套题里只要有一道填空，题块数就会比接口少一题，最终卡在「不提交」。
     function lqBlocks(scope) {
         var root = scope || document;
         var out = [];
-        var inputSel = 'input[type="radio"], input[type="checkbox"], input[type="text"], textarea';
+        // 文本类 input 也要算：平台经常不写 type 属性（默认就是 text），
+        // 只认 input[type="text"] 会把填空框一个都匹配不到。
+        var inputSel = 'input[type="radio"], input[type="checkbox"], input[type="text"], textarea, input:not([type])';
         var shapeSel = 'input[type="radio"], input[type="checkbox"]';
         var cands = collectCandidates(root, LESSON_QUIZ.blockSelectors, LESSON_QUIZ.MAX_BLOCKS * 4);
         var i;
@@ -3101,12 +3112,15 @@
             var el = cands[i];
             if (!isVisible(el)) continue;
             if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-log-overlay')) continue;
-            if (!el.querySelector(inputSel)) continue;
+            // 富文本只认「像填空」的那种，且不能在讨论/评论区里（否则回复框会算成一道题）
+            if (!el.querySelector(inputSel) && !lqHasBlankEditor(el)) continue;
+            // 讨论/评论区的富文本编辑器不是题块
+            if (lqLooksLikeCommentBox(el)) continue;
             // 老版单元测验/作业的题块，明确不碰
             if (el.querySelector('.u-questionItem')) continue;
             if (out.indexOf(el) === -1) out.push(el);
         }
-        if (out.length > 0) return lqKeepInnermost(out);
+        if (out.length > 0) return lqKeepInnermost(withBlankBlocks(out, root));
 
         var inputs = root.querySelectorAll(shapeSel);
         var seen = [];
@@ -3133,7 +3147,7 @@
             seen.push(wrapEl);
             out.push(wrapEl);
         }
-        if (out.length > 0) return lqKeepInnermost(out);
+        if (out.length > 0) return lqKeepInnermost(withBlankBlocks(out, root));
 
         // 兜底二：从输入框往上爬，爬到「同一题的所有选项」那个容器为止
         for (i = 0; i < inputs.length && out.length < LESSON_QUIZ.MAX_BLOCKS; i++) {
@@ -3148,6 +3162,27 @@
             if (node.querySelector('.u-questionItem')) continue;
             seen.push(node);
             out.push(node);
+        }
+        return lqKeepInnermost(withBlankBlocks(out, root));
+    }
+
+    // 把「纯填空块」并进已有题块列表。
+    // 只并进还没被覆盖、也不包含已有题块的那些（避免把整卷当成一题）。
+    function withBlankBlocks(blocks, root) {
+        var out = blocks.slice();
+        var blanks = lqBlankBlocks(root || document);
+        for (var i = 0; i < blanks.length; i++) {
+            var b = blanks[i];
+            if (out.indexOf(b) !== -1) continue;
+            var covered = false;
+            for (var j = 0; j < out.length; j++) {
+                if (out[j] === b) { covered = true; break; }
+                // 已经算过一题的容器里，别再塞一个更小的分割
+                if (out[j].contains(b)) { covered = true; break; }
+                // b 罩住了已有题块：说明 b 是整个卷子/整节，不是一题
+                if (b.contains(out[j])) { covered = true; break; }
+            }
+            if (!covered) out.push(b);
         }
         return out;
     }
@@ -3308,6 +3343,207 @@
         return out;
     }
 
+    // ===================== 填空题 =====================
+    // 随堂测验里除了单选/多选/判断，还有填空题：没有选项、只有输入框，
+    // 答案在接口的 correctOptionList / answers / correctAnswer 里。
+    // 老版本只认 correctAnswer，遇到新版接口就是「答案取不到 → 整卷不提交」。
+
+    var LQ_BLANK_SEL = 'textarea, input, [contenteditable="true"]';
+
+    // 这个输入框能不能填（排除单选/多选/隐藏/按钮类）
+    function lqIsFillable(el) {
+        if (!el || !isVisible(el)) return false;
+        if (el.disabled || el.readOnly) return false;
+        var tag = el.tagName;
+        if (tag === 'TEXTAREA') return true;
+        if (tag === 'INPUT') {
+            var ty = String((el.getAttribute && el.getAttribute('type')) || 'text').toLowerCase();
+            if (ty === 'radio' || ty === 'checkbox' || ty === 'hidden' || ty === 'file' ||
+                ty === 'submit' || ty === 'button' || ty === 'reset' || ty === 'image') return false;
+            return true;
+        }
+        if (el.isContentEditable || (el.getAttribute && el.getAttribute('contenteditable') === 'true')) {
+            // 富文本编辑器只在「像填空」的容器里认，否则会把讨论区回复框当成题目
+            if (lqLooksLikeCommentBox(el)) return false;
+            return lqIsBlankish(el);
+        }
+        return false;
+    }
+
+    function lqIsBlankish(el) {
+        var host = null;
+        try {
+            host = el.closest && el.closest('[class*="blank"], [class*="Blank"], [class*="fill"], [class*="Fill"], [class*="question"], [class*="Question"], article');
+        } catch (e) { host = null; }
+        if (host) return true;
+        var ph = (el.getAttribute && (el.getAttribute('placeholder') || el.getAttribute('data-placeholder'))) || '';
+        return /填空|答案|请填|请输入/.test(ph);
+    }
+
+    // 讨论区 / 评论区的富文本不是题目，别把回复框当填空框填了
+    function lqLooksLikeCommentBox(node) {
+        if (!node || !node.closest) return false;
+        try {
+            return !!node.closest('[class*="comment"], [class*="Comment"], [class*="forum"], [class*="Forum"], ' +
+                '[class*="discuss"], [class*="Discuss"], [class*="reply"], [class*="Reply"]');
+        } catch (e) { return false; }
+    }
+
+    function lqBlankFields(block) {
+        var out = [];
+        if (!block) return out;
+        var raw;
+        try { raw = block.querySelectorAll(LQ_BLANK_SEL); } catch (e) { return out; }
+        for (var i = 0; i < raw.length; i++) {
+            if (!lqIsFillable(raw[i])) continue;
+            if (out.indexOf(raw[i]) === -1) out.push(raw[i]);
+        }
+        return out;
+    }
+
+    // 题块里有没有「能填的富文本空」——讨论区的回复框不算
+    function lqHasBlankEditor(el) {
+        if (!el) return false;
+        var eds;
+        try { eds = el.querySelectorAll('[contenteditable="true"]'); } catch (e) { return false; }
+        for (var i = 0; i < eds.length; i++) {
+            if (lqIsFillable(eds[i])) return true;
+        }
+        return false;
+    }
+
+    function lqFieldValue(el) {
+        if (!el) return '';
+        if (typeof el.value === 'string') return el.value;
+        return el.textContent || '';
+    }
+
+    // 写入一个填空框。原生 input 走 setNativeValue（React/Vue 能收到变更），
+    // contenteditable 只能改 textContent 再补发 input/change 事件。
+    function lqSetBlank(el, text) {
+        if (!el) return;
+        var val = String(text === null || text === undefined ? '' : text);
+        if (el.isContentEditable || (el.getAttribute && el.getAttribute('contenteditable') === 'true')) {
+            try { el.focus(); } catch (e) {}
+            el.textContent = val;
+            try {
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            } catch (e) { /* jsdom 之类环境不发事件也无所谓 */ }
+            return;
+        }
+        setNativeValue(el, val);
+        try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+    }
+
+    function lqSameText(a, b) {
+        if (lqKey(a) === lqKey(b)) return true;
+        return cleanText(a) === cleanText(b);
+    }
+
+    function isFillBlankQuestion(q) {
+        if (!q) return false;
+        var t = String(q.type === null || q.type === undefined ? '' : q.type);
+        return t === '3' || /COMPLETION|FILLBLANK|FILL_BLANK|BLANK/i.test(t) || !!(q.blanks && q.blanks.length);
+    }
+
+    // 一个填空框属于哪一题：优先题目容器，其次往上爬到一个「只含这一处输入、
+    // 且有题干文字」的祖先。爬过头会把整卷当成一题，所以带长度与数量上限。
+    function lqBlankHost(field, root) {
+        if (!field) return null;
+        var host = null;
+        try {
+            host = field.closest('article, fieldset, .m-fillblankQuestion, .m-choiceQuestion, ' +
+                '[class*="fillblank"], [class*="fillBlank"], [class*="fill-blank"], ' +
+                '[class*="blankItem"], [class*="blank-item"], [class*="question"], [class*="Question"], li');
+        } catch (e) { host = null; }
+        if (host && host !== root && host !== document.body) {
+            var ht = cleanText(host.textContent || '');
+            // 容器太大（超过 600 字）说明爬到了整卷/整节，退回逐框爬
+            if (ht.length >= 4 && ht.length <= 600) return host;
+        }
+        var node = field.parentElement, hops = 0;
+        while (node && hops < 6 && node !== root) {
+            if (node.querySelectorAll(LQ_BLANK_SEL).length > 1) break;
+            if (cleanText(node.textContent || '').length >= 4) return node;
+            node = node.parentElement;
+            hops++;
+        }
+        return null;
+    }
+
+    // 当前页面/容器像不像「答题环境」。用来给填空识别兜底：
+    // 讨论区也有输入框，但没有这些字样，别在那上面瞎填。
+    function lqQuizEnvOk(root) {
+        if (root && root !== document) return true;
+        try {
+            if (contentKindFromTab(currentContentTab()) === 'quiz') return true;
+        } catch (e) { /* ignore */ }
+        if (PAGE_CONFIG.quizUrl.test(location.href)) return true;
+        var head = cleanText((document.body ? document.body.textContent : '') || '').slice(0, 4000);
+        return /随堂测验|单选题|多选题|判断题|填空题|请选择|提交答案|作答/.test(head);
+    }
+
+    // 只有输入框、没有选项的「填空题块」
+    function lqBlankBlocks(root) {
+        var rootEl = root || document;
+        if (!lqQuizEnvOk(rootEl)) return [];
+        var out = [];
+        var fields = [];
+        var raw;
+        try { raw = rootEl.querySelectorAll(LQ_BLANK_SEL); } catch (e) { return out; }
+        for (var i = 0; i < raw.length; i++) {
+            if (!lqIsFillable(raw[i])) continue;
+            if (lqLooksLikeCommentBox(raw[i])) continue;
+            fields.push(raw[i]);
+        }
+        for (var j = 0; j < fields.length && out.length < LESSON_QUIZ.MAX_BLOCKS; j++) {
+            var host = lqBlankHost(fields[j], rootEl);
+            if (!host) continue;
+            if (lqLooksLikeCommentBox(host)) continue;
+            // 容器里有单选/多选 → 那是选择题，交给上面的逻辑，不重复算一题
+            if (host.querySelector('input[type="radio"], input[type="checkbox"]')) continue;
+            if (out.indexOf(host) === -1) out.push(host);
+        }
+        return out;
+    }
+
+    // 填空题答案的字段名，按可靠度排：新版 MOOC 给 correctOptionList，
+    // 老版给 correctAnswer（「答案#解析」），SPOC 的 dwr 给 answers / answerList。
+    var LQ_BLANK_KEYS = ['correctOptionList', 'correctAnswers', 'answerList', 'answers',
+        'blankAnswers', 'blankList', 'standardAnswer', 'correctAnswer', 'answer'];
+
+    function lqPushBlank(out, v, depth) {
+        if (v === null || v === undefined || depth > 3) return;
+        if (Object.prototype.toString.call(v) === '[object Array]') {
+            for (var i = 0; i < v.length; i++) lqPushBlank(out, v[i], depth + 1);
+            return;
+        }
+        if (typeof v === 'object') {
+            lqPushBlank(out, lqPick(v, ['label', 'text', 'content', 'answer', 'value', 'title', 'blank'], ''), depth + 1);
+            return;
+        }
+        var s = cleanText(lqStripTags(String(v)));
+        if (!s) return;
+        // 多空用 # 分段；但「答案#解析」里的解析段不该当成第二个空
+        var segs = s.split('#');
+        for (var j = 0; j < segs.length; j++) {
+            var seg = cleanText(segs[j]);
+            if (!seg) continue;
+            if (/^[【\[\(（]?\s*(解析|分析|说明|点评|答案)/.test(seg)) continue;
+            out.push(seg);
+        }
+    }
+
+    function lqBlankAnswersFrom(q) {
+        for (var i = 0; i < LQ_BLANK_KEYS.length; i++) {
+            var out = [];
+            lqPushBlank(out, q[LQ_BLANK_KEYS[i]], 0);
+            if (out.length) return out;
+        }
+        return [];
+    }
+
     function lqParseApiQuestion(q) {
         if (!q) return null;
         var opts = q.options || q.optionList || [];
@@ -3346,15 +3582,9 @@
                 if (o.id) ids.push(String(o.id));
             }
         }
-        // 填空题：correctAnswer 形如「答案#解析」，多空时用 # 分段
-        var blanks = [];
-        if (q.correctAnswer) {
-            var segs = lqStripTags(q.correctAnswer).split('#');
-            for (i = 0; i < segs.length; i++) {
-                var seg = cleanText(segs[i]);
-                if (seg) blanks.push(seg);
-            }
-        }
+        // 填空题：新版接口给 correctOptionList（数组），老版给 correctAnswer（「答案#解析」）。
+        // 只认老字段的话，新版页面的填空题永远是「没答案」，整卷就不交了。
+        var blanks = lqBlankAnswersFrom(q);
         return {
             type: q.type,
             title: lqStripTags(q.title || q.plainTextTitle || ''),
@@ -3363,6 +3593,7 @@
             letters: letters,
             allLabels: allLabels,
             blanks: blanks,
+            fillBlankType: q.fillBlankType,
         };
     }
 
@@ -3597,25 +3828,35 @@
     async function lqApplyAnswer(block, q) {
         var i;
 
-        // 填空题
-        if (q.type == 3 || /COMPLETION/i.test(String(q.type))) {
-            var fields = [];
-            var raw = block.querySelectorAll('textarea, input[type="text"], input:not([type])');
-            for (i = 0; i < raw.length; i++) {
-                if (isVisible(raw[i]) && !raw[i].disabled && !raw[i].readOnly) fields.push(raw[i]);
+        // —— 填空题 ——
+        // 判据以「页面结构」为准：这一块里有可填的输入框、且一个选项都没有，
+        // 那它就是填空题（接口 type 有时不标准，光看 type 会漏）。
+        var fields = lqBlankFields(block);
+        var optCount = lqOptions(block).length;
+
+        if (fields.length > 0 && optCount === 0) {
+            var blanks = q.blanks || [];
+            if (blanks.length === 0) {
+                return {
+                    ok: false,
+                    reason: '填空题：接口没给出答案（type=' + q.type + '，'
+                        + (isFillBlankQuestion(q) ? '识别为填空但没有答案字段' : '未识别为填空') + '）',
+                };
             }
-            if (fields.length === 0 || q.blanks.length === 0) return { ok: false, reason: '填空无输入框/无答案' };
-            // 空的个数对得上才逐空填，否则只填第一空（多出来的多半是解析/说明文字）
-            var use = (fields.length === q.blanks.length) ? q.blanks : [q.blanks[0]];
+            // 空数与答案数一致时逐空填；不一致就只填第一空，剩下的留给人补
+            var use = (fields.length === blanks.length) ? blanks : [blanks[0]];
+            var got = 0;
             for (i = 0; i < fields.length && i < use.length; i++) {
-                setNativeValue(fields[i], use[i]);
+                lqSetBlank(fields[i], use[i]);
                 await sleep(150);
+                if (lqSameText(lqFieldValue(fields[i]), use[i])) got++;
             }
-            var allOk = (fields.length <= use.length);
-            for (i = 0; i < fields.length && i < use.length; i++) {
-                if (cleanText(fields[i].value) !== cleanText(use[i])) allOk = false;
-            }
-            return { ok: allOk, reason: '填空' };
+            var allOk = (got === fields.length && fields.length === use.length);
+            return {
+                ok: allOk,
+                reason: '填空 ' + got + '/' + fields.length + ' 空'
+                    + (allOk ? '' : '（答案 ' + blanks.length + ' 个 vs 空 ' + fields.length + ' 个）'),
+            };
         }
 
         var idxs = lqCorrectIndexes(block, q);
@@ -3759,7 +4000,9 @@
                 var opts = lqOptions(blocks[i]);
                 var names = [];
                 for (var o = 0; o < opts.length; o++) names.push(cleanText(opts[o].text).slice(0, 14) || '(空)');
+                var blanks = lqBlankFields(blocks[i]).length;
                 lines.push('页面' + (i + 1) + '「' + lqBlockText(blocks[i]).slice(0, 34) + '」选项×' + opts.length
+                    + (blanks ? ' 填空框×' + blanks : '')
                     + '[' + names.join(' / ') + ']');
             }
             var maxQ = Math.min(questions.length, 12);
@@ -3856,6 +4099,15 @@
             var why = missing.length > 0
                 ? ('有 ' + missing.length + ' 题没匹配上答案（' + missing.join(' / ') + '）')
                 : ('接口有 ' + res.questions.length + ' 题、页面只渲染了 ' + blocks.length + ' 题，可能分页显示');
+            // 题数对不上时，把「没被任何题块匹配到的答案」列出来——是填空题没认出来、
+            // 还是真分页，看这一行就能分清
+            if (res.questions.length > blocks.length) {
+                var left = [];
+                for (var k = 0; k < res.questions.length; k++) {
+                    if (used.indexOf(res.questions[k]) === -1) left.push(cleanText(res.questions[k].title).slice(0, 22));
+                }
+                if (left.length) logDebug('quiz', '没被页面接住的答案：' + left.join(' / '));
+            }
             updateStatus('⚠️ 已填 ' + filled + ' 题，但' + why + '；请手动补完再点提交（为免交白卷，未自动提交）');
             return { ok: true, submitted: false, reason: 'partial', filled: filled, missing: missing.length };
         }
@@ -4067,6 +4319,12 @@
             if (isVisible(radios[i]) || isVisible(radios[i].parentElement)) visRadio++;
         }
         bits.push('可见单选框=' + visRadio);
+        bits.push('可见填空框=' + (function () {
+            var n = 0;
+            var fs = lqBlankFields(document);
+            for (var k = 0; k < fs.length; k++) if (isVisible(fs[k])) n++;
+            return n;
+        })());
         bits.push('题块类名命中=' + (hasVisibleQuestionBlocks() ? '是' : '否'));
 
         // 页面上有没有「开始答题 / 继续答题 / 查看测验」这类入口按钮
@@ -4130,7 +4388,20 @@
         // 类名兜不住的版式：当前内容标签明确说是测验，页面里又真有可见的单选/多选框，
         // 那按题块算。否则会出现「标签=quiz、题块类名不认识」→ 等满 15 秒 → 被当成
         // 单元测验跳过。加标签类型这个门槛，是为了不在视频弹题浮层、讨论区上误判。
-        if (contentKindFromTab(currentContentTab()) === 'quiz' && hasVisibleChoiceInputs()) return true;
+        if (contentKindFromTab(currentContentTab()) === 'quiz' &&
+            (hasVisibleChoiceInputs() || hasVisibleFillFields())) return true;
+        return false;
+    }
+
+    // 页面上是否存在可见的「可填写输入框」（填空题）。只在「标签=测验」时参与判定，
+    // 否则讨论区的回复框会让任何页面都像测验页。
+    function hasVisibleFillFields() {
+        var els = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (el.closest && el.closest('#mooc-auto-review-panel, #mar-probe-overlay, #mar-help-overlay, #mar-log-overlay, #mar-float-next')) continue;
+            if (lqIsFillable(el)) return true;
+        }
         return false;
     }
 
