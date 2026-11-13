@@ -2,7 +2,7 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-![Version](https://img.shields.io/badge/Version-2.1.1-green)
+![Version](https://img.shields.io/badge/Version-2.1.2-green)
 
 ![ScriptCat Daily](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fscriptcat.org%2Fapi%2Fv2%2Fscripts%2F8833\&query=%24.data.today_install\&label=ScriptCat%20Daily\&color=orange)
 
@@ -369,7 +369,7 @@
 
 | 版本 | 要点 |
 |---|---|
-| 2.1.1 | **随堂测验支持填空题**：改为按页面结构认题块（有输入框、无选项即填空），输入框兼容 `textarea`、不写 `type` 的 `input` 与富文本 `contenteditable`；答案字段兼容新版 `correctOptionList` 与老版 `correctAnswer`（自动剔除「#解析」段）、`answers` 数组多空；逐空回读校验，空数与答案数不一致时不提交；讨论区回复框不会被误判成填空块；放弃作答的现场摘要新增「可见填空框」 |
+| 2.1.2 | **随堂测验支持填空题**：改为按页面结构认题块（有输入框、无选项即填空），输入框兼容 `textarea`、不写 `type` 的 `input` 与富文本 `contenteditable`；答案字段兼容新版 `correctOptionList` 与老版 `correctAnswer`（自动剔除「#解析」段）、`answers` 数组多空；逐空回读校验，空数与答案数不一致时不提交；讨论区回复框不会被误判成填空块；放弃作答的现场摘要新增「可见填空框」 |
 | **2.1** | **跳转不再漏内容**：同小节前进改为「按内容条索引 +1」而不是 `nextElementSibling`（tab 被 `<li>` 包着时后者直接断链，整节剩余内容被当成“本节结束”而跳章）；内容标签识别兼容新版 tailwind 内容条（`.learn-unit-tabs-scroll` + 颜色 class 激活态，不再死等 `aria-selected`）；当前内容只取“正在用的那条内容条”，不再把页面上所有 tablist 混在一起。**不再被平台的自动跳转带走**：跳转时记录预期内容，强制等待期间校验激活项，被平台切走就切回并重新计时；已看完的视频不重播、等待压到 1.5 秒，避免它 5 秒后自动跳到下一集时把中间文档/测验/讨论跨过去。**跨小节不再误跳章**：下拉菜单里定位不到当前小节时按编号兜底，仍失败就停下提示，绝不把“匹配失败”当成“本节已结束”；跨小节分组标题兜底改用文案重新定位（原来 `indexOf` 恒为 -1，兜底从未生效）；`tablist 刷新` 判据从“元素被替换”改为“激活项变了”，兼容框架复用节点；连续视频跳过默认关闭（`LEARN_SKIP_CONSECUTIVE_VIDEO`）；标题栏与设置页新增**官网**入口 |
 | 1.14.5 | **自动学习不再把「没渲染出来的测验」当单元测验跳过**：等满窗口仍无题块时启动自救——①结果态先点「重做」；②重按当前内容标签 2 轮；③切到相邻内容再切回，逼平台重新请求；课件确实坏了（unitId 不匹配）则快速跳过不空等。题块检测新增「标签=quiz + 页面上有 ≥2 个可见单选框」兜底，不再只认类名。视频/文档/讨论白页时也先催一次重载（8 秒）。放弃作答时输出现场摘要（标签类型 / 可见单选框数 / 入口按钮 / 是否结果态），告别「跳过」两个字没下文 |
 | 1.14.4 | **SPOC 选择题匹配加固**：dwr 解析不再写死 `answer === true`（兼容 `"true"`/`1`）与单一字段名（`optionDtos`/`optionList`/`isAnswer` 等），答案只给字母时按选项下标映射；选项定位改判 label/容器可见性，兼容 `opacity:0` 的假单选框，并支持 `li`、兄弟节点取文案；选项比对先剥「A、」前缀再加覆盖率兜底；题块切分新增按 `name` 分组（修「选项平铺在一个 `.j-list` 里被并成一题」）；题干提取改为删节点 + 字符串减法，避免选项文案混进题干；题干是图片/公式时按选项集合重合度反查题目；SPOC 两份答案源按「与页面题块对得上几题」择优，不再接口一 ok 就收；未填满时日志输出「页面题块 vs 答案」对照诊断 |
