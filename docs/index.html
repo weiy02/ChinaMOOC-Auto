@@ -43,7 +43,7 @@
     <div class="wrap hero-inner">
       <div class="hero-copy">
         <div class="pill-row">
-          <span class="pill pill-live">当前版本 <b data-version>2.1.2</b></span>
+          <span class="pill pill-live">当前版本 <b data-version>2.1.3</b></span>
           <span class="pill">MOOC + SPOC</span>
           <span class="pill">MIT</span>
         </div>
@@ -153,7 +153,7 @@
         <article class="card">
           <div class="card-icon">讨</div>
           <h3>课堂讨论自动回复</h3>
-          <p>正文取自已有楼层，不自己编内容。可按「最新答复」或「点赞最多」取值，发送前先预览：选的是哪一层、作者是谁、要发什么，一目了然。同一条讨论只回复一次。</p>
+          <p>正文取自已有楼层，不自己编内容。可按「最新答复」或「点赞最多」取值，发送前先预览：选的是哪一层、作者是谁、要发什么，一目了然。同一条讨论可以重复回复——历史命中只记进日志，不会拦你。</p>
         </article>
         <article class="card">
           <div class="card-icon">测</div>
@@ -280,6 +280,14 @@
     <div class="wrap">
       <h2 class="sec-title">近期更新</h2>
       <ul class="timeline">
+        <li>
+          <span class="ver">2.1.3</span>
+          <div>
+            <h3>讨论回复不再被「已回复过」拦下</h3>
+            <p>以前只要本地记录命中原样跳过，key 一旦认错（标题取到别处、地址带随机参数）就会被永久判成「已回复」，怎么点都不发。</p>
+            <p>现在把判定结果写进日志：<code>[discuss] 判定结果＝已回复 / 未回复</code>，命中时连命中的时间与历史条数一起记；<b>但无论判定结果如何都会继续回复</b>——课堂讨论本来就允许重复回复。记录仍然保留，只用于追溯，设置里可清除。</p>
+          </div>
+        </li>
         <li>
           <span class="ver">2.1.2</span>
           <div>
